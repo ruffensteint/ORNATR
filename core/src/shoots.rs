@@ -17,9 +17,13 @@ pub struct ShootParams {
     pub follow: Option<f64>,
     /// Leaf fan: this leaf plus smaller companions (66%, 33%) from the same node (2 or 3 leaves).
     pub fan: Option<u8>,
+    /// Scroll-vine curls: the curl this one grows from (None: the vine's stem).
+    pub on: Option<String>,
 }
+/// The preset id marking a scroll-vine curl.
+pub const VINE_CURL: &str = "vine-curl";
 impl Default for ShootParams {
-    fn default() -> Self { ShootParams { progress: 0.5, reach: 0.12, turn: 0.0, curl: 0.66, side: 1.0, leaf_side: None, stem: None, leaf_scale: None, lobes: None, depth: None, stalk: None, taper: None, bend: None, preset: None, follow: None, fan: None } }
+    fn default() -> Self { ShootParams { progress: 0.5, reach: 0.12, turn: 0.0, curl: 0.66, side: 1.0, leaf_side: None, stem: None, leaf_scale: None, lobes: None, depth: None, stalk: None, taper: None, bend: None, preset: None, follow: None, fan: None, on: None } }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShootEdit { pub params: ShootParams, pub id: String, pub backbone: usize, pub replaces: Option<String>, pub hidden: bool, pub under: bool }

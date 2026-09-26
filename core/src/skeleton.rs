@@ -166,7 +166,7 @@ fn scaled(l: &mut Layout, f: f64, from: Point, to: Point) {
 /// Build a construction on a `width` × `height` page, fitted with a margin.
 pub fn skeleton_layout(kind: Skeleton, seed: u32, width: f64, height: f64) -> Layout {
     let (stems, buds) = design(kind, seed);
-    let mut l = Layout { width, height, curves: stems.iter().map(curve).collect(), growth: vec![], locked_parts: vec![], shoots: vec![], items: vec![], print_backbone: false };
+    let mut l = Layout { width, height, curves: stems.iter().map(curve).collect(), growth: vec![], locked_parts: vec![], shoots: vec![], items: vec![], print_backbone: false, frame: None, surface: None };
     l.growth = stems.iter().enumerate().map(|(i, s)| GrowthSettings {
         seed: seed.wrapping_add(i as u32 * 7919), family: Some(s.family), side: s.curl, levels: if s.accents >= 2 { 2 } else { 1 },
         auto_shoots: Some(s.accents > 0), secondary_scale: Some(s.scale.clamp(0.5, 2.0)), flip: if s.flip { Some(true) } else { None },

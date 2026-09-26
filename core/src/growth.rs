@@ -29,9 +29,13 @@ pub struct GrowthSettings {
     pub collar: Option<f64>,
     /// Collar style id ("axil" or "split"); None is the axil leaf.
     pub collar_style: Option<String>,
+    /// Grow as a scroll vine instead: curls seeded along the backbone this many
+    /// mm apart, each the largest scroll that fits, branching, never touching,
+    /// clad with acanthus (when `leaves` > 0) and fitted to the carving surface.
+    pub vine: Option<f64>,
 }
 impl Default for GrowthSettings {
-    fn default() -> Self { GrowthSettings { seed: 1248, branches: 5.0, reach: 33.0, curl: 1.0, levels: 2, leaves: 2, clearance: 2.0, stem: 2.8, side: Side::Alternate, family: None, composition: None, secondary_scale: None, sweeps: None, auto_shoots: None, flip: None, free: None, attach: None, wraps: None, wrap_leaf: None, collar: None, collar_style: None } }
+    fn default() -> Self { GrowthSettings { seed: 1248, branches: 5.0, reach: 33.0, curl: 1.0, levels: 2, leaves: 2, clearance: 2.0, stem: 2.8, side: Side::Alternate, family: None, composition: None, secondary_scale: None, sweeps: None, auto_shoots: None, flip: None, free: None, attach: None, wraps: None, wrap_leaf: None, collar: None, collar_style: None, vine: None } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +92,8 @@ pub fn grow_curl(root: Point, angle: f64, reach: f64, curl: f64, side: f64) -> V
 pub struct GrowInput<'a> {
     pub width: f64, pub height: f64, pub curve: Curve,
     pub locked: &'a [GrowthPart], pub shoots: &'a [ShootEdit], pub settings: &'a GrowthSettings,
+    /// The carving surface the growth must stay inside (page units); None is the page.
+    pub frame: Option<&'a [Point]>,
 }
 
 /// Grow one backbone in page units.
@@ -98,7 +104,7 @@ pub fn grow_backbone(inp: &GrowInput) -> GrowthResult {
     let scale = (inp.width * inp.height / (240.0 * 150.0)).sqrt();
     let shrink = |p: &Point| pt(p.x / scale, p.y / scale);
     let locked: Vec<GrowthPart> = inp.locked.iter().map(|p| GrowthPart { points: p.points.iter().map(shrink).collect(), polygon: p.polygon.iter().map(shrink).collect(), folds: p.folds.iter().map(|f| f.iter().map(shrink).collect()).collect(), ridges: p.ridges.as_ref().map(|r| r.iter().map(|f| f.iter().map(shrink).collect()).collect()), cuts: p.cuts.iter().map(|f| f.iter().map(shrink).collect()).collect(), width: p.width / scale, length: p.length / scale, ..p.clone() }).collect();
-    let page = Page { width: inp.width / scale, height: inp.height / scale, curve: inp.curve.map(|p| shrink(&p)), locked: &locked };
+    let page = Page { width: inp.width / scale, height: inp.height / scale, curve: inp.curve.map(|p| shrink(&p)), locked: &locked, frame: inp.frame.map(|f| f.iter().map(shrink).collect()) };
     let grown = if s.composition == Some(2) || s.family.map_or(false, |f| f != Family::Spiral) { crate::composed::composed_growth(&page, s) } else { crate::spiral::spiral_anatomy(&page, s) };
     let own = if s.auto_shoots == Some(false) { GrowthResult { parts: grown.parts.into_iter().filter(|p| p.parent.is_none() || locked.iter().any(|q| q.id == p.id)).collect(), ..grown } } else { grown };
     // Wrapping leaves follow the main scroll into its eye, above it and
@@ -116,9 +122,25 @@ pub fn grow_backbone(inp: &GrowInput) -> GrowthResult {
     GrowthResult { parts, ..result }
 }
 
-/// The normalised page a family grows on.
-pub struct Page<'a> { pub width: f64, pub height: f64, pub curve: Curve, pub locked: &'a [GrowthPart] }
-impl Page<'_> { pub fn guide(&self) -> Vec<Point> { arc_table(&self.curve).into_iter().map(|r| r.point).collect() } }
+/// The normalised page a family grows on, and the frame it must stay inside
+/// (a carving surface outline; None is the page rectangle).
+pub struct Page<'a> { pub width: f64, pub height: f64, pub curve: Curve, pub locked: &'a [GrowthPart], pub frame: Option<Vec<Point>> }
+impl Page<'_> {
+    pub fn guide(&self) -> Vec<Point> { arc_table(&self.curve).into_iter().map(|r| r.point).collect() }
+    /// Whether grown points stay `margin` inside the frame, or inside the page
+    /// rectangle when there is no frame (always, for a free backbone).
+    pub fn fits(&self, pts: &[Point], margin: f64, free: bool) -> bool {
+        match &self.frame {
+            Some(f) => pts.iter().all(|p| crate::outline::inside(*p, f) && (0..f.len()).all(|i| seg_distance(*p, f[i], f[(i + 1) % f.len()]) >= margin)),
+            None => free || pts.iter().all(|p| p.x >= margin && p.y >= margin && p.x <= self.width - margin && p.y <= self.height - margin),
+        }
+    }
+}
+fn seg_distance(p: Point, a: Point, b: Point) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y); let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 { (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy)
+}
 
 /// Simplified outline during the growth animation (progress < 1).
 pub fn growth_polygons(result: &GrowthResult, progress: f64) -> (Vec<Vec<Point>>, Vec<Vec<Point>>) {

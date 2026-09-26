@@ -54,7 +54,7 @@ pub fn composed_growth(page: &Page, s: &GrowthSettings) -> GrowthResult {
                 attempts += 1;
                 let size = reach * ratio * s.secondary_scale.unwrap_or(1.0) * shrink * (0.94 + random.next() * 0.12);
                 let points = grow_curl(fp, fa, size, curl_for, side);
-                if s.free != Some(true) && points.iter().any(|p| p.x < 3.0 || p.y < 3.0 || p.x > page.width - 3.0 || p.y > page.height - 3.0) { continue; }
+                if !page.fits(&points, 3.0, s.free == Some(true)) { continue; }
                 let skip = if family == Family::Spiral { 24 } else { 48 };
                 let mut gap = f64::INFINITY;
                 for (i, p) in points.iter().enumerate() { if !(i > skip && i % 8 == 0) { continue; } for other in &parts { for (j, q) in other.points.iter().enumerate() { if j % 12 == 0 { gap = gap.min(distance(*p, *q)); } } } }
@@ -74,7 +74,7 @@ pub fn composed_growth(page: &Page, s: &GrowthSettings) -> GrowthResult {
                 let len_c = line_length(&c.points);
                 let o = ContourOptions { lobed: s.leaves > 0, root_width: root_flare(&main.polygon, c.root, len_c * (1.0 - PHI) * PHI), stalk: shoot_stalk(), ..ContourOptions::default() };
                 let a = acanthus_contour(&c.points, 1.5, leaf_side, len_c * (1.0 - PHI) * (if open { 1.0 } else { PHI }) * (0.95 - (c.bend.abs() * 0.2).min(0.2)), &o);
-                if s.free != Some(true) && a.polygon.iter().any(|p| p.x < 1.0 || p.y < 1.0 || p.x > page.width - 1.0 || p.y > page.height - 1.0) { continue; }
+                if !page.fits(&a.polygon, 1.0, s.free == Some(true)) { continue; }
                 let collar = 4f64.max(c.size * if family == Family::Spiral { 0.25 } else { 0.65 });
                 let stalk_reach = collar.max(len_c * shoot_stalk() * 1.6);
                 let mut collision = false;

@@ -33,6 +33,7 @@ pub struct G {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub wrap_leaf: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub collar: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub collar_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub vine: Option<f64>,
 }
 fn seed() -> f64 { 1248.0 } fn five() -> f64 { 5.0 } fn reach() -> f64 { 33.0 } fn one() -> f64 { 1.0 } fn two() -> f64 { 2.0 } fn stem() -> f64 { 2.8 } fn alt() -> String { "alternate".into() }
 
@@ -51,6 +52,7 @@ pub struct S {
     #[serde(skip_serializing_if = "Option::is_none")] pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub follow: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub fan: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub on: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub replaces: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")] pub hidden: bool,
     #[serde(default, skip_serializing_if = "is_false")] pub under: bool,
@@ -72,12 +74,14 @@ pub struct File {
     #[serde(default)] pub items: Vec<I>,
     #[serde(default)] pub print_backbone: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub mode: Option<String>,
+    /// The carving surface preset ("plaque", "oval", "rectangle"); none is the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub surface: Option<String>,
 }
 
 fn curve(c: &[P; 4]) -> Curve { [pt(c[0].x, c[0].y), pt(c[1].x, c[1].y), pt(c[2].x, c[2].y), pt(c[3].x, c[3].y)] }
 fn curve_out(c: &Curve) -> [P; 4] { c.map(|p: Point| P { x: p.x, y: p.y }) }
 fn growth_in(g: &G) -> GrowthSettings {
-    GrowthSettings { seed: g.seed as u32, branches: g.branches, reach: g.reach, curl: g.curl, levels: g.levels as u8, leaves: g.leaves as u8, clearance: g.clearance, stem: g.stem,
+    GrowthSettings { seed: g.seed as u32, branches: g.branches, reach: g.reach, curl: g.curl, levels: g.levels as u8, leaves: g.leaves as u8, clearance: g.clearance, stem: g.stem, vine: g.vine.filter(|v| v.is_finite()).map(|v| v.clamp(15.0, 200.0)),
         side: match g.side.as_str() { "left" => Side::Left, "right" => Side::Right, _ => Side::Alternate },
         family: g.family.as_deref().and_then(family_in), composition: g.composition.map(|v| v as u8), secondary_scale: g.secondary_scale, sweeps: g.sweeps.map(|v| v as u8), auto_shoots: g.auto_shoots, flip: g.flip, free: g.free, attach: g.attach.filter(|a| a.is_finite() && *a >= 0.0 && *a < 20.0).map(|a| a as usize), wraps: g.wraps.filter(|w| w.is_finite() && *w >= 0.0).map(|w| w.min(2.0) as u8), wrap_leaf: g.wrap_leaf.clone().filter(|id| scroll_core::profiles::profile(id).is_some()), collar: g.collar.filter(|c| c.is_finite() && *c > 0.0).map(|c| c.clamp(0.4, 2.5)), collar_style: g.collar_style.clone().filter(|s| scroll_core::collar::CollarStyle::from_id(s).is_some()) }
 }
@@ -86,7 +90,7 @@ pub fn family_name(f: Family) -> &'static str { match f { Family::Spiral => "spi
 fn growth_out(g: &GrowthSettings) -> G {
     G { seed: g.seed as f64, branches: g.branches, reach: g.reach, curl: g.curl, levels: g.levels as f64, leaves: g.leaves as f64, clearance: g.clearance, stem: g.stem,
         side: match g.side { Side::Left => "left", Side::Right => "right", Side::Alternate => "alternate" }.into(),
-        family: g.family.map(|f| family_name(f).into()), composition: g.composition.map(|v| v as f64), secondary_scale: g.secondary_scale, sweeps: g.sweeps.map(|v| v as f64), auto_shoots: g.auto_shoots, flip: g.flip, free: g.free, attach: g.attach.map(|a| a as f64), wraps: g.wraps.map(|w| w as f64), wrap_leaf: g.wrap_leaf.clone(), collar: g.collar, collar_style: g.collar_style.clone() }
+        family: g.family.map(|f| family_name(f).into()), composition: g.composition.map(|v| v as f64), secondary_scale: g.secondary_scale, sweeps: g.sweeps.map(|v| v as f64), auto_shoots: g.auto_shoots, flip: g.flip, free: g.free, attach: g.attach.map(|a| a as f64), wraps: g.wraps.map(|w| w as f64), wrap_leaf: g.wrap_leaf.clone(), collar: g.collar, collar_style: g.collar_style.clone(), vine: g.vine }
 }
 
 pub fn parse(text: &str) -> Result<Layout, String> {
@@ -97,16 +101,16 @@ pub fn parse(text: &str) -> Result<Layout, String> {
     let base = f.growth.as_ref().map(growth_in).unwrap_or_default();
     let growth = match &f.backbone_growth { Some(v) if v.len() == curves.len() => v.iter().map(growth_in).collect(), _ => vec![base; curves.len()] };
     let shoots = f.shoots.iter().filter(|s| s.backbone < curves.len()).map(|s| ShootEdit { id: s.id.clone(), backbone: s.backbone, replaces: s.replaces.clone(), hidden: s.hidden, under: s.under,
-        params: ShootParams { progress: s.progress, reach: s.reach, turn: s.turn, curl: s.curl, side: s.side, leaf_side: s.leaf_side, stem: s.stem, leaf_scale: s.leaf_scale, lobes: s.lobes, depth: s.depth, stalk: s.stalk, taper: s.taper, bend: s.bend, preset: s.preset.clone(), follow: s.follow.filter(|f| f.is_finite()).map(|f| f.clamp(0.0, 1.0)), fan: s.fan.filter(|f| f.is_finite() && *f >= 2.0).map(|f| f.min(3.0) as u8) } }).collect();
+        params: ShootParams { progress: s.progress, reach: s.reach, turn: s.turn, curl: s.curl, side: s.side, leaf_side: s.leaf_side, stem: s.stem, leaf_scale: s.leaf_scale, lobes: s.lobes, depth: s.depth, stalk: s.stalk, taper: s.taper, bend: s.bend, preset: s.preset.clone(), follow: s.follow.filter(|f| f.is_finite()).map(|f| f.clamp(0.0, 1.0)), fan: s.fan.filter(|f| f.is_finite() && *f >= 2.0).map(|f| f.min(3.0) as u8), on: s.on.clone() } }).collect();
     let items = f.items.iter().map(|i| Placement { id: i.id.clone(), motif: i.motif.clone(), progress: i.progress, length: i.length, fullness: i.fullness, angle: i.angle, bend: i.bend, mirror: i.mirror, folds: i.folds, backbone: i.backbone.unwrap_or(0), on_top: i.on_top }).collect();
-    Ok(Layout { width: f.width, height: f.height, curves, growth, locked_parts: vec![], shoots, items, print_backbone: f.print_backbone })
+    Ok(Layout { width: f.width, height: f.height, curves, growth, locked_parts: vec![], shoots, items, print_backbone: f.print_backbone, frame: None, surface: f.surface.clone().filter(|s| scroll_core::model::surface_outline(s, 100.0, 100.0).is_some()) })
 }
 
 pub fn save(l: &Layout) -> String {
     let f = File { version: 1, width: l.width, height: l.height, curve: curve_out(&l.curves[0]), extra_curves: l.curves[1..].iter().map(curve_out).collect(),
         backbone_growth: Some(l.growth.iter().map(growth_out).collect()), growth: l.growth.first().map(growth_out),
-        shoots: l.shoots.iter().map(|e| S { id: e.id.clone(), backbone: e.backbone, progress: e.params.progress, reach: e.params.reach, turn: e.params.turn, curl: e.params.curl, side: e.params.side, leaf_side: e.params.leaf_side, stem: e.params.stem, leaf_scale: e.params.leaf_scale, lobes: e.params.lobes, depth: e.params.depth, stalk: e.params.stalk, taper: e.params.taper, bend: e.params.bend, preset: e.params.preset.clone(), follow: e.params.follow, fan: e.params.fan.map(|f| f as f64), replaces: e.replaces.clone(), hidden: e.hidden, under: e.under }).collect(),
-        items: vec![], print_backbone: l.print_backbone, mode: Some("growth".into()) };
+        shoots: l.shoots.iter().map(|e| S { id: e.id.clone(), backbone: e.backbone, progress: e.params.progress, reach: e.params.reach, turn: e.params.turn, curl: e.params.curl, side: e.params.side, leaf_side: e.params.leaf_side, stem: e.params.stem, leaf_scale: e.params.leaf_scale, lobes: e.params.lobes, depth: e.params.depth, stalk: e.params.stalk, taper: e.params.taper, bend: e.params.bend, preset: e.params.preset.clone(), follow: e.params.follow, fan: e.params.fan.map(|f| f as f64), on: e.params.on.clone(), replaces: e.replaces.clone(), hidden: e.hidden, under: e.under }).collect(),
+        items: vec![], print_backbone: l.print_backbone, mode: Some("growth".into()), surface: l.surface.clone() };
     serde_json::to_string_pretty(&f).unwrap()
 }
 

@@ -19,3 +19,6 @@ pub mod collar;
 pub mod joins;
 pub mod booleans;
 pub mod exact;
+pub mod surfaces;
+pub mod curls;
+pub mod acanthus;

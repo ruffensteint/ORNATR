@@ -39,11 +39,16 @@ pub struct Placement { pub id: String, pub motif: String, pub progress: f64, pub
 pub struct Layout {
     pub width: f64, pub height: f64, pub curves: Vec<Curve>, pub growth: Vec<GrowthSettings>,
     pub locked_parts: Vec<GrowthPart>, pub shoots: Vec<ShootEdit>, pub items: Vec<Placement>, pub print_backbone: bool,
+    /// The carving surface outline (mm): growth stays inside it. None is the page rectangle.
+    pub frame: Option<Vec<Point>>,
+    /// A carving surface preset fitted to the page ("plaque", "oval", "rectangle"),
+    /// used when `frame` is not set. None is the page itself.
+    pub surface: Option<String>,
 }
 impl Layout {
     /// One grown backbone on a 240 × 150 mm page.
     pub fn starter() -> Layout {
-        Layout { width: 240.0, height: 150.0, curves: vec![[pt(34.0, 112.0), pt(85.0, 125.0), pt(110.0, 66.0), pt(196.0, 86.0)]], growth: vec![GrowthSettings::default()], locked_parts: vec![], shoots: vec![], items: vec![], print_backbone: false }
+        Layout { width: 240.0, height: 150.0, curves: vec![[pt(34.0, 112.0), pt(85.0, 125.0), pt(110.0, 66.0), pt(196.0, 86.0)]], growth: vec![GrowthSettings::default()], locked_parts: vec![], shoots: vec![], items: vec![], print_backbone: false, frame: None, surface: None }
     }
     pub fn growth_for(&self, i: usize) -> GrowthSettings { self.growth.get(i).cloned().or_else(|| self.growth.first().cloned()).unwrap_or_default() }
     /// Where an attached backbone meets its parent: the parent's centreline
@@ -90,24 +95,50 @@ impl Layout {
         out
     }
     /// Grow every backbone. With several, part ids are prefixed `backbone-N/`.
-    pub fn grow(&self) -> GrowthResult {
+    pub fn grow(&self) -> GrowthResult { self.grow_with(false) }
+    /// As `grow`, but quick for dragging: a scroll vine shows only its stem.
+    pub fn grow_draft(&self) -> GrowthResult { self.grow_with(true) }
+    fn grow_with(&self, draft: bool) -> GrowthResult {
         let mut settled = self.clone();
         let mut rounds = 0; while rounds < 6 && settled.settle() { rounds += 1; } // chains settle in a few rounds; cycles stop
-        settled.grow_settled()
+        settled.grow_settled(draft)
     }
-    fn grow_settled(&self) -> GrowthResult {
+    /// The carving surface outline, if one is set (an explicit frame, or a preset fitted to the page).
+    pub fn surface_polygon(&self) -> Option<Vec<Point>> {
+        self.frame.clone().or_else(|| self.surface.as_deref().and_then(|s| surface_outline(s, self.width, self.height)))
+    }
+    fn is_vine(&self, index: usize) -> bool { self.growth_for(index).vine.is_some_and(|v| v.is_finite() && v > 0.0) }
+    /// One backbone's growth: a scroll vine (keeping clear of `obstacles`,
+    /// the parts already grown on the page), or the usual scroll.
+    fn grow_one(&self, index: usize, locked: &[GrowthPart], shoots: &[ShootEdit], obstacles: &[Vec<Point>], draft: bool) -> GrowthResult {
+        let s = self.growth_for(index);
+        let surface = self.surface_polygon();
+        let (vine_edits, others): (Vec<ShootEdit>, Vec<ShootEdit>) = shoots.iter().cloned().partition(|e| e.params.preset.as_deref() == Some(crate::shoots::VINE_CURL));
+        match s.vine.filter(|v| v.is_finite() && *v > 0.0) {
+            Some(spacing) => grow_vine(self.width, self.height, &self.curves[index], &s, spacing, surface.as_deref(), obstacles, &vine_edits, draft),
+            None => grow_backbone(&GrowInput { width: self.width, height: self.height, curve: self.curves[index], locked, shoots: &others, settings: &s, frame: surface.as_deref() }),
+        }
+    }
+    fn grow_settled(&self, draft: bool) -> GrowthResult {
         if self.curves.len() == 1 {
-            let s = self.growth_for(0);
-            return grow_backbone(&GrowInput { width: self.width, height: self.height, curve: self.curves[0], locked: &self.locked_parts, shoots: &self.shoots.iter().filter(|e| e.backbone == 0).cloned().collect::<Vec<_>>(), settings: &s });
+            return self.grow_one(0, &self.locked_parts, &self.shoots.iter().filter(|e| e.backbone == 0).cloned().collect::<Vec<_>>(), &[], draft);
         }
         let mut all = GrowthResult { message: format!("{} backbones · independently grown scrolls", self.curves.len()), ..Default::default() };
-        for (index, curve) in self.curves.iter().enumerate() {
+        // the usual scrolls first, then vines in order, each vine keeping
+        // clear of everything grown before it; parts stay in backbone order
+        let mut grown: Vec<Option<GrowthResult>> = vec![None; self.curves.len()];
+        let order: Vec<usize> = (0..self.curves.len()).filter(|&i| !self.is_vine(i)).chain((0..self.curves.len()).filter(|&i| self.is_vine(i))).collect();
+        for index in order {
             let prefix = format!("backbone-{index}/");
             let strip = |s: &str| s.rsplit('/').next().unwrap().to_string();
             let locked: Vec<GrowthPart> = self.locked_parts.iter().filter(|p| p.id.starts_with(&prefix)).map(|p| GrowthPart { id: strip(&p.id), parent: p.parent.as_deref().map(strip), ..p.clone() }).collect();
             let shoots: Vec<ShootEdit> = self.shoots.iter().filter(|e| e.backbone == index).map(|e| ShootEdit { backbone: 0, ..e.clone() }).collect();
-            let s = self.growth_for(index);
-            let r = grow_backbone(&GrowInput { width: self.width, height: self.height, curve: *curve, locked: &locked, shoots: &shoots, settings: &s });
+            let obstacles: Vec<Vec<Point>> = if self.is_vine(index) { grown.iter().flatten().flat_map(|r| r.parts.iter().map(|p| p.polygon.clone())).collect() } else { vec![] };
+            grown[index] = Some(self.grow_one(index, &locked, &shoots, &obstacles, draft));
+        }
+        for (index, r) in grown.into_iter().enumerate() {
+            let prefix = format!("backbone-{index}/");
+            let Some(r) = r else { continue };
             all.parts.extend(r.parts.into_iter().map(|p| GrowthPart { id: format!("{prefix}{}", p.id), parent: p.parent.map(|q| format!("{prefix}{q}")), ..p }));
         }
         // An attached backbone's sweep becomes a child of its parent's sweep,
@@ -211,3 +242,96 @@ pub fn convert_legacy(layout: &mut Layout, new_id: &mut dyn FnMut() -> String) {
 }
 
 pub fn point_list(p: &[Point]) -> String { p.iter().map(|q| format!("{} {}", q.x, q.y)).collect::<Vec<_>>().join(" ") }
+
+/// A carving surface preset, fitted inside a `width` × `height` page with a
+/// small border: "plaque" (a routed board with notched corners), "oval" or
+/// "rectangle". None for an unknown id.
+pub fn surface_outline(id: &str, width: f64, height: f64) -> Option<Vec<Point>> {
+    use crate::surfaces as frames;
+    let m = (width.min(height) * 0.04).clamp(3.0, 12.0);
+    let (w, h) = (width - 2.0 * m, height - 2.0 * m);
+    let raw = match id { "plaque" => frames::plaque(w, h), "oval" => frames::oval(w, h), "rectangle" => frames::rectangle(w, h), _ => return None };
+    // fit the outline's box (the plaque's arches reach past its nominal box) into the border
+    let b = crate::geometry::Bounds::of(&raw);
+    let (sx, sy) = (w / (b.r - b.l).max(1e-9), h / (b.b - b.t).max(1e-9));
+    Some(raw.iter().map(|p| pt(m + (p.x - b.l) * sx, m + (p.y - b.t) * sy)).collect())
+}
+
+thread_local! {
+    /// Grown vines by their inputs: growing one takes up to a second, so an
+    /// unchanged vine is not grown again when something else changes.
+    static VINES: std::cell::RefCell<std::collections::HashMap<u64, GrowthResult>> = Default::default();
+}
+
+/// A scroll vine along `curve`: curls seeded `spacing` mm apart, grown to fit
+/// and never touching each other or the `obstacles` (other backbones' parts),
+/// clad with acanthus (or plain carved scrolls when leaves are off), fitted
+/// inside the surface (the page less a border when none is set). With `edits`
+/// (curls edited by hand) the vine is built exactly from them instead. A
+/// draft of an unedited vine is the stem alone.
+#[allow(clippy::too_many_arguments)]
+pub fn grow_vine(width: f64, height: f64, curve: &Curve, s: &GrowthSettings, spacing: f64, surface: Option<&[Point]>, obstacles: &[Vec<Point>], edits: &[ShootEdit], draft: bool) -> GrowthResult {
+    use crate::curls::{build_scrolls, dress, dress_acanthus, grow_scrolls, scroll_leaf, Dress, ScrollOptions, ScrollResult};
+    let path: Vec<Point> = arc_table(curve).into_iter().map(|r| r.point).collect();
+    let page = [pt(4.0, 4.0), pt(width - 4.0, 4.0), pt(width - 4.0, height - 4.0), pt(4.0, height - 4.0)];
+    let surface: Vec<Point> = surface.map(|v| v.to_vec()).unwrap_or_else(|| page.to_vec());
+    let stem = (s.stem * 2.1).clamp(3.0, 12.0);
+    if draft && edits.is_empty() { return dress(&ScrollResult { curve: path, scrolls: vec![], outside: 0.0 }, Dress::Carved, stem); }
+    // sizes follow the page: tuned on a 300 x 130 mm panel
+    let k = (width.min(height) / 130.0).clamp(0.4, 3.0);
+    let leaves = s.leaves > 0;
+    let (spec, reach, max_half) = scroll_leaf(); let max_half = max_half * k;
+    let key = {
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut eat = |v: f64| { h ^= v.to_bits(); h = h.wrapping_mul(0x100000001b3); };
+        for p in curve { eat(p.x); eat(p.y); }
+        for p in &surface { eat(p.x); eat(p.y); }
+        for o in obstacles { eat(o.len() as f64); for p in o.iter().step_by(7) { eat(p.x); eat(p.y); } }
+        for e in edits { let p = &e.params; for v in [p.progress, p.reach, p.turn, p.curl, p.side, p.leaf_scale.unwrap_or(1.0), if e.hidden { 1.0 } else { 0.0 }] { eat(v); } for b in e.id.bytes().chain(p.on.as_deref().unwrap_or("").bytes()) { eat(b as f64); } }
+        for v in [width, height, spacing, s.stem, s.seed as f64, if leaves { 1.0 } else { 0.0 }] { eat(v); }
+        h
+    };
+    if let Some(hit) = VINES.with(|c| c.borrow().get(&key).cloned()) { return hit; }
+    let band = if leaves { max_half * 1.3 } else { stem };
+    let res = if edits.is_empty() {
+        let o = ScrollOptions { seed_spacing: spacing, max_length: 260.0 * k, min_length: 45.0 * k, width: band, clearance: 3.0, generations: 2, branch_from: 90.0 * k, fill_gap: 16.0 * k, seed: s.seed };
+        grow_scrolls(&path, false, &surface, obstacles, &o)
+    } else {
+        let list: Vec<(String, crate::shoots::ShootParams, bool)> = edits.iter().map(|e| (e.id.clone(), e.params.clone(), e.hidden)).collect();
+        build_scrolls(&path, &list, band)
+    };
+    let grown = if leaves { dress_acanthus(&res, &surface, obstacles, stem, &spec, reach, max_half) } else { dress(&res, Dress::Carved, stem) };
+    // the final boolean check: every part, the stem too, is clipped to the surface
+    let surf = crate::booleans::union(&[surface.as_slice()]);
+    let parts = grown.parts.into_iter().filter_map(|mut p| {
+        let inside = crate::booleans::intersect(&crate::booleans::union(&[p.polygon.as_slice()]), &surf);
+        let piece = inside.into_iter().max_by(|a, b| crate::booleans::area(&vec![a.clone()]).partial_cmp(&crate::booleans::area(&vec![b.clone()])).unwrap())?;
+        p.polygon = piece[0].clone();
+        // its inner lines (folds, slits and eyes) too, to what is left of it
+        let kept = p.polygon.clone(); p.folds = clip_lines(&p.folds, &kept); p.cuts = clip_lines(&p.cuts, &kept);
+        Some(p)
+    }).collect();
+    let message = if edits.is_empty() { format!("Scroll vine: {} curls", res.scrolls.len()) } else { format!("Scroll vine: {} curls, edited by hand", res.scrolls.len()) };
+    let grown = GrowthResult { message, parts, ..grown };
+    VINES.with(|c| { let mut c = c.borrow_mut(); if c.len() > 24 { c.clear(); } c.insert(key, grown.clone()); });
+    grown
+}
+
+/// The parts of `lines` that lie inside `area` (tested every half millimetre).
+fn clip_lines(lines: &[Vec<Point>], area: &[Point]) -> Vec<Vec<Point>> {
+    let mut out = vec![];
+    for line in lines {
+        let mut cur: Vec<Point> = vec![];
+        for w in line.windows(2) {
+            let n = (distance(w[0], w[1]) / 0.5).ceil().max(1.0) as usize;
+            for k in 0..n {
+                let (a, b) = (k as f64 / n as f64, (k + 1) as f64 / n as f64);
+                let (p, q) = (pt(w[0].x + (w[1].x - w[0].x) * a, w[0].y + (w[1].y - w[0].y) * a), pt(w[0].x + (w[1].x - w[0].x) * b, w[0].y + (w[1].y - w[0].y) * b));
+                if crate::outline::inside(pt((p.x + q.x) / 2.0, (p.y + q.y) / 2.0), area) { if cur.is_empty() { cur.push(p); } cur.push(q); }
+                else if cur.len() > 1 { out.push(std::mem::take(&mut cur)); } else { cur.clear(); }
+            }
+        }
+        if cur.len() > 1 { out.push(cur); }
+    }
+    out
+}

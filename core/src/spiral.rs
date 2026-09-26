@@ -34,7 +34,7 @@ pub fn spiral_anatomy(page: &Page, s: &GrowthSettings) -> GrowthResult {
     let mut rand = Mulberry(s.seed);
     let guide = page.guide(); let guide_length = line_length(&guide);
     let free = s.free == Some(true);
-    let in_page = |pts: &[Point]| free || pts.iter().all(|p| p.x >= 2.0 && p.y >= 2.0 && p.x <= page.width - 2.0 && p.y <= page.height - 2.0);
+    let in_page = |pts: &[Point]| page.fits(pts, 2.0, free);
     let mirror = if s.flip == Some(true) { -1.0 } else { 1.0 };
     let (tp, ta) = line_frame(&guide, 1.0);
     let preferred = (if s.side == Side::Right { 1.0 } else { -1.0 }) * mirror;

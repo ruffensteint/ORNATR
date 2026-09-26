@@ -11,6 +11,7 @@ A desktop carving design tool for Windows, written in Rust. Generate acanthus sc
   - **Wrapping leaves** laid into a scroll's curl, either generated or taken from the library.
   - **Follow stem**, which bends a placed leaf along the stem it grows from.
   - **Leaf fans:** two or three leaves from one node, sized 100 / 66 / 33.
+  - **Scroll vines:** a backbone can grow as a vine instead: curls seeded along it, each the largest scroll that fits, branching and never touching each other or the other backbones, clad with acanthus and fitted to a **carving surface** (whole page, plaque, oval or rectangle). Each curl can be moved, turned, resized, mirrored or deleted like a library leaf.
   - **Layers and carving guides:** over/under layering and carving guides.
   - **Root joins** (Canvas settings): *Exact* rounds the crotch where a leaf or branch grows from its stem with a true fillet (adjustable radius) and tidies tangled outlines; *Smooth* and *Classic* are the earlier styles.
 - **Chip workspace:** a chip-carving pattern generator with its own preset library.

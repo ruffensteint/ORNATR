@@ -8,7 +8,7 @@ mod presets;
 mod theme;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
-use scroll_core::geometry::{fit_curve, pt, Bounds, Curve, Point};
+use scroll_core::geometry::{distance, fit_curve, pt, Bounds, Curve, Point};
 use scroll_core::growth::{Family, GrowthPart, GrowthResult, GrowthSettings, Side};
 use scroll_core::layers::{carving_guides, layered_drawing, Drawing, Guides};
 use scroll_core::bud::{is_bud, BUD_PRESETS};
@@ -17,7 +17,7 @@ use scroll_core::model::{convert_legacy, preset_params, Layout, LEAF_PRESETS};
 use scroll_core::skeleton::{skeleton_layout, Skeleton};
 use scroll_core::outline::inside;
 use scroll_core::profiles::profile;
-use scroll_core::shoots::{drag_tip, nearest_progress, tip_handle, ShootEdit, ShootParams};
+use scroll_core::shoots::{drag_tip, nearest_progress, tip_handle, ShootEdit, ShootParams, VINE_CURL};
 use scroll_core::transform::{flip_curve, mirror_shoot, transform_curve, Axis, TransformKind};
 use std::path::PathBuf;
 use theme::{Canvas, Joins, Prefs, Theme, ThemeId};
@@ -113,12 +113,15 @@ impl App {
     // ---------- model plumbing ----------
     fn regrow(&mut self) {
         let mut rounds = 0; while rounds < 6 && self.layout.settle() { rounds += 1; }
-        self.grown = self.layout.grow();
+        // A scroll vine takes up to a second to grow, so while something is
+        // dragged it shows its stem only, and grows on release.
+        let vines = self.layout.growth.iter().any(|g| g.vine.is_some());
+        self.grown = if vines && self.drag.is_some() { self.layout.grow_draft() } else { self.layout.grow() };
         // Smooth and exact joins take a little longer, so while something is
         // being dragged the classic drawing is shown and theirs follows on release.
         let slow = self.prefs.joins != Joins::Classic;
         self.drawing = if slow && self.drag.is_none() { self.prefs.join_style().draw(&self.grown) } else { layered_drawing(&self.grown) };
-        self.smooth_due = slow && self.drag.is_some();
+        self.smooth_due = (slow || vines) && self.drag.is_some();
         self.guides = if self.carving { Some(carving_guides(&self.grown)) } else { None };
         self.stale = false;
     }
@@ -167,9 +170,31 @@ impl App {
         let params = part.shoot.clone()?;
         let (backbone, local) = self.split_id(part_id);
         if layout.shoots.iter().any(|e| e.backbone == backbone && e.id == local) { return Some(local); }
+        if params.preset.as_deref() == Some(VINE_CURL) {
+            // the first edit to a scroll vine keeps all its curls as edits, so
+            // the vine is built from them from now on and nothing shuffles
+            for p in &self.grown.parts {
+                let (b, l) = self.split_id(&p.id);
+                let Some(sh) = p.shoot.as_ref().filter(|s| s.preset.as_deref() == Some(VINE_CURL)) else { continue };
+                if b == backbone && !layout.shoots.iter().any(|e| e.backbone == b && e.id == l) { layout.shoots.push(ShootEdit { params: sh.clone(), id: l, backbone: b, replaces: None, hidden: false, under: false }); }
+            }
+            return Some(local);
+        }
         let id = new_id();
         layout.shoots.push(ShootEdit { params, id: id.clone(), backbone, replaces: Some(local), hidden: false, under: false });
         Some(id)
+    }
+    /// For a scroll-vine curl: where along the stem or curl it grows from the
+    /// point `mm` lies (0 to 1). None for other leaves.
+    fn vine_progress(&self, backbone: usize, id: &str, mm: Point) -> Option<f64> {
+        let e = self.layout.shoots.iter().find(|e| e.id == id && e.backbone == backbone && e.params.preset.as_deref() == Some(VINE_CURL))?;
+        let local = e.params.on.clone().unwrap_or_else(|| "curve".into());
+        let full = if self.multi() { format!("backbone-{backbone}/{local}") } else { local };
+        let pts = &self.grown.parts.iter().find(|p| p.id == full)?.points;
+        if pts.len() < 2 { return None; }
+        let i = (0..pts.len()).min_by(|&a, &b| distance(pts[a], mm).partial_cmp(&distance(pts[b], mm)).unwrap())?;
+        // keep clear of the very ends, where a curl could not leave cleanly
+        Some((i as f64 / (pts.len() - 1) as f64).clamp(0.02, 0.9))
     }
     fn patch_shoot(&mut self, f: impl FnOnce(&mut ShootEdit)) {
         let Some(sel) = self.selected.clone() else { return };
@@ -344,7 +369,14 @@ impl App {
         let Some(sel) = self.selected.clone() else { return };
         let mut next = self.layout.clone();
         let Some(id) = self.take_over(&mut next, &sel) else { return };
-        if let Some(i) = next.shoots.iter().position(|e| e.id == id) { if next.shoots[i].replaces.is_some() { next.shoots[i].hidden = true; } else { next.shoots.remove(i); } }
+        let (b, _) = self.split_id(&sel);
+        let vine = next.shoots.iter().any(|e| e.id == id && e.backbone == b && e.params.preset.as_deref() == Some(VINE_CURL));
+        if vine {
+            // a vine curl goes with the curls growing from it
+            let mut gone = vec![id.clone()];
+            loop { let more: Vec<String> = next.shoots.iter().filter(|e| e.backbone == b && e.params.on.as_ref().is_some_and(|o| gone.contains(o)) && !gone.contains(&e.id)).map(|e| e.id.clone()).collect(); if more.is_empty() { break; } gone.extend(more); }
+            next.shoots.retain(|e| !(e.backbone == b && gone.contains(&e.id)));
+        } else if let Some(i) = next.shoots.iter().position(|e| e.id == id) { if next.shoots[i].replaces.is_some() { next.shoots[i].hidden = true; } else { next.shoots.remove(i); } }
         self.commit(next); self.selected = None;
     }
 
@@ -489,6 +521,41 @@ impl App {
         }
         let mut g = self.settings(); let before = g.clone();
         ui.add_space(6.0);
+        // what this backbone grows: the usual scroll, or a scroll vine
+        let mut vine = g.vine.is_some();
+        segmented(ui, self.t(), &[(false, "Scroll"), (true, "Scroll vine")], &mut vine);
+        if vine != g.vine.is_some() { g.vine = if vine { Some(55.0) } else { None }; }
+        if let Some(spacing) = g.vine {
+            ui.label(egui::RichText::new("Curls grow from seed points along the backbone, each as large as fits, branching into smaller curls that curl the other way. None touch, and all fit inside the carving surface (Page, below).").small().color(self.t().dim));
+            ui.horizontal(|ui| {
+                let mut seed = g.seed as i64;
+                ui.label("Variation"); if ui.add(egui::DragValue::new(&mut seed).range(0..=99999)).changed() { g.seed = seed as u32; }
+                if ui.button("New").clicked() { g.seed = g.seed.wrapping_mul(1103515245).wrapping_add(12345) % 100000; }
+            });
+            let mut s = spacing;
+            if ui.add(egui::Slider::new(&mut s, 20.0..=150.0).text("Seed spacing").suffix(" mm").fixed_decimals(0)).on_hover_text("How far apart curls start along the backbone. Further apart gives fewer, larger curls.").changed() { g.vine = Some(s); }
+            let mut leaves = g.leaves > 0;
+            if ui.checkbox(&mut leaves, "Acanthus leaves").on_hover_text("Clad each curl with an acanthus leaf on the outside of its turn (broad belly, two fingers a lobe). Off gives plain carved scrolls.").changed() { g.leaves = if leaves { 2 } else { 0 }; }
+            // curls edited by hand: the vine is built from them until it is regrown
+            let b = self.backbone;
+            let edited = self.layout.shoots.iter().filter(|e| e.backbone == b && e.params.preset.as_deref() == Some(VINE_CURL)).count();
+            let mut regrow = false;
+            if edited > 0 {
+                ui.label(egui::RichText::new(format!("{edited} curls kept as edited. Changing Variation or Seed spacing, or Regrow, grows the vine afresh (Undo brings your edits back).")).small().color(self.t().dim));
+                regrow = ui.button("Regrow vine").clicked();
+            }
+            let reseeded = g.seed != before.seed || g.vine != before.vine;
+            if g != before || regrow {
+                let mut next = self.layout.clone();
+                while next.growth.len() < next.curves.len() { let g0 = next.growth_for(next.growth.len()); next.growth.push(g0); }
+                next.growth[b] = g.clone();
+                if regrow || reseeded { next.shoots.retain(|e| !(e.backbone == b && e.params.preset.as_deref() == Some(VINE_CURL))); }
+                self.commit(next);
+                if regrow || reseeded { self.selected = None; }
+            }
+            self.page_section(ui);
+            return;
+        }
         let fam = g.family.unwrap_or(Family::Spiral);
         egui::ComboBox::from_label("Pattern family").selected_text(family_label(fam)).show_ui(ui, |ui| {
             for f in [Family::Spiral, Family::Branching, Family::Border, Family::Spray, Family::Fan] { if ui.selectable_label(fam == f, family_label(f)).clicked() { g.family = Some(f); } }
@@ -523,6 +590,11 @@ impl App {
             ui.selectable_value(&mut g.side, Side::Alternate, "Alternate"); ui.selectable_value(&mut g.side, Side::Left, "Left"); ui.selectable_value(&mut g.side, Side::Right, "Right");
         });
         if g != before { self.set_settings(g); }
+        self.page_section(ui);
+    }
+
+    /// Page size, carving surface and export options.
+    fn page_section(&mut self, ui: &mut egui::Ui) {
         section(ui, self.t(), "Page");
         let (mut w, mut h) = (self.layout.width, self.layout.height);
         ui.horizontal(|ui| { ui.label("Width"); ui.add(egui::DragValue::new(&mut w).range(40.0..=1000.0).suffix(" mm")); ui.label("Height"); ui.add(egui::DragValue::new(&mut h).range(40.0..=1000.0).suffix(" mm")); });
@@ -531,6 +603,14 @@ impl App {
             for c in next.curves.iter_mut() { *c = c.map(|p| pt(p.x * sx, p.y * sy)); }
             next.width = w; next.height = h; next.locked_parts.clear(); self.commit(next); self.fitted = false; self.skel_thumbs = vec![None; Skeleton::ALL.len()];
         }
+        // the carving surface: growth stays inside it (a scroll vine fills it)
+        let now = self.layout.surface.clone();
+        let label = |s: Option<&str>| match s { Some("plaque") => "Plaque", Some("oval") => "Oval", Some("rectangle") => "Rectangle", _ => "Whole page" };
+        let mut pick = now.clone();
+        egui::ComboBox::from_label("Carving surface").selected_text(label(now.as_deref())).show_ui(ui, |ui| {
+            for s in [None, Some("plaque"), Some("oval"), Some("rectangle")] { ui.selectable_value(&mut pick, s.map(String::from), label(s)); }
+        }).response.on_hover_text("The shape you will carve on, fitted to the page with a small border. Scrolls stay inside it, and a scroll vine grows to fill it.");
+        if pick != now { let mut n = self.layout.clone(); n.surface = pick; self.commit(n); }
         let mut pb = self.layout.print_backbone; if ui.checkbox(&mut pb, "Include backbone line in SVG").changed() { let mut n = self.layout.clone(); n.print_backbone = pb; self.commit(n); }
     }
 
@@ -594,6 +674,25 @@ impl App {
         let under = self.selected_edit().map_or(false, |e| e.under);
         let edited = self.selected_edit().map_or(false, |e| e.replaces.is_some());
         let bud = sh.preset.as_deref().is_some_and(is_bud);
+        if sh.preset.as_deref() == Some(VINE_CURL) {
+            section(ui, self.t(), "Selected curl");
+            ui.label(egui::RichText::new("Drag the curl to slide it along the stem or curl it grows from; drag the open dot to swing and size it. Editing one curl keeps the whole vine as you have it; Regrow vine (under Backbone) starts afresh.").small().color(self.t().dim));
+            let mut size = sh.reach * 100.0;
+            if ui.add(egui::Slider::new(&mut size, 5.0..=150.0).text("Size (% of stem)").fixed_decimals(0)).changed() { self.patch_shoot(|e| e.params.reach = size / 100.0); }
+            let mut angle = sh.turn.to_degrees();
+            if ui.add(egui::Slider::new(&mut angle, -120.0..=120.0).text("Angle °").fixed_decimals(0)).on_hover_text("Its heading where it leaves the stem, against the stem's own direction.").changed() { self.patch_shoot(|e| e.params.turn = angle.to_radians()); }
+            let mut roll = sh.curl * 100.0;
+            if ui.add(egui::Slider::new(&mut roll, 30.0..=100.0).text("Roll %").fixed_decimals(0)).on_hover_text("How far it rolls into its eye.").changed() { self.patch_shoot(|e| e.params.curl = roll / 100.0); }
+            if self.settings().leaves > 0 {
+                let mut width = sh.leaf_scale.unwrap_or(1.0);
+                if ui.add(egui::Slider::new(&mut width, 0.3..=1.8).text("Leaf width")).changed() { self.patch_shoot(|e| e.params.leaf_scale = Some(width)); }
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Mirror").on_hover_text("Turn the other way.").clicked() { self.patch_shoot(|e| { e.params.side = -e.params.side; e.params.turn = -e.params.turn; }); }
+                if ui.button("Delete").on_hover_text("Remove this curl and the curls growing from it.").clicked() { self.remove_selected(); }
+            });
+            return;
+        }
         section(ui, self.t(), if bud { "Selected bud" } else { "Selected leaf" });
         let measured = sh.preset.as_deref().and_then(profile);
         if bud {
@@ -791,6 +890,11 @@ impl App {
         for (grow, alpha) in [(10.0, 10u8), (5.0, 16), (2.0, 24)] { painter.rect_filled(paper.expand(grow).translate(Vec2::new(0.0, grow * 0.4)), grow + 2.0, Color32::from_black_alpha(alpha)); }
         painter.rect_filled(paper, 2.0, sheet);
         if self.grid { self.paint_grid(&painter, paper); }
+        // the carving surface, if one is set
+        if let Some(outline) = self.layout.surface_polygon() {
+            let pts: Vec<Pos2> = outline.iter().map(|p| self.to_screen(*p)).collect();
+            painter.add(Shape::closed_line(pts, Stroke::new(1.2, with_alpha(guide, 160))));
+        }
         let stroke_w = (0.45 * self.zoom).clamp(1.6, 3.0);
         let fold_w = (0.2 * self.zoom).clamp(0.7, 1.4);
         // selected highlight under the ink
@@ -874,7 +978,7 @@ impl App {
                     // An attached scroll's start slides along its parent's stem, keeping its shape.
                     if !(i == 0 && self.layout.slide_attached(b, mm)) { self.layout.curves[b][i] = pt(mm.x.clamp(0.0, self.layout.width), mm.y.clamp(0.0, self.layout.height)); }
                     self.layout.locked_parts.clear(); self.stale = true; }
-                Some(Drag::ShootRoot { edit, backbone }) => { let (id, b) = (edit.clone(), *backbone); let pr = nearest_progress(&self.layout.curves[b], mm); if let Some(e) = self.layout.shoots.iter_mut().find(|e| e.id == id && e.backbone == b) { e.params.progress = pr; } self.stale = true; }
+                Some(Drag::ShootRoot { edit, backbone }) => { let (id, b) = (edit.clone(), *backbone); let pr = self.vine_progress(b, &id, mm).unwrap_or_else(|| nearest_progress(&self.layout.curves[b], mm)); if let Some(e) = self.layout.shoots.iter_mut().find(|e| e.id == id && e.backbone == b) { e.params.progress = pr; } self.stale = true; }
                 Some(Drag::ShootTip { edit, start, root, handle }) => { let (reach, turn) = drag_tip(start, *root, *handle, mm); let id = edit.clone(); if let Some(e) = self.layout.shoots.iter_mut().find(|e| e.id == id) { e.params.reach = reach; e.params.turn = turn; } self.stale = true; }
                 Some(Drag::Transform { kind, center, from, curves }) => { for (i, curve) in curves.iter() { self.layout.curves[*i] = transform_curve(curve, *kind, *center, *from, mm, shift); } self.layout.locked_parts.clear(); self.stale = true; }
                 None => {}
