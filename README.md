@@ -1,6 +1,6 @@
 # ScrollWorks
 
-A desktop carving design tool for Windows, written in Rust. Generate acanthus scrollwork from editable backbones, compose chip-carving patterns, place library leaves and buds, and export designs as SVG at physical millimetre sizes. All generation runs locally, with no AI services and no network access.
+A desktop carving design tool for Windows, written in Rust. Generate acanthus scrollwork from editable backbones, compose chip-carving patterns, place library leaves and buds, and export designs as SVG at physical millimetre sizes. All generation runs locally.
 
 ## Features
 
