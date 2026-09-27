@@ -27,7 +27,7 @@ fn chips_match_web_generator() {
             }
             "settings" => {
                 let s = ChipSettings { family: ChipFamily::from_key(f[0]).unwrap(), count: f[1].parse().unwrap(), size: f[2].parse().unwrap(), removed: if f[9] == "-" { vec![] } else { f[9].split(',').map(|n| n.parse().unwrap()).collect() },
-                    seed: opt(f[3]), grid: opt(f[4]), edits: Default::default(), grammar: opt(f[5]), border_seed: opt(f[6]), border_version: opt(f[7]), traditional: opt(f[8]) };
+                    seed: opt(f[3]), grid: opt(f[4]), edits: Default::default(), grammar: opt(f[5]), border_seed: opt(f[6]), border_version: opt(f[7]), traditional: opt(f[8]), faceted: None };
                 settings = Some(s);
             }
             "edit" => { let s = settings.as_mut().unwrap(); s.edits.insert(f[0].parse().unwrap(), points(&f[1..])); }

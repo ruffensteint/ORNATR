@@ -2,7 +2,8 @@
 //! millimetre grid, keep presets and export the SVG at actual size.
 use super::*;
 use crate::presets::{app_dir, Library};
-use scroll_core::chip::{chip_handles, chip_regions, chip_svg, move_chip_handle, valid_chip, ChipFamily, ChipSettings};
+use scroll_core::facets::{shade, BorderStyle, Centre};
+use scroll_core::chip::{chip_facets, chip_handles, chip_regions, Faceted, chip_svg, move_chip_handle, valid_chip, ChipFamily, ChipSettings};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChipTab { Generate, Presets, Theme }
@@ -23,6 +24,10 @@ pub struct ChipState {
     cached_for: Option<ChipSettings>,
     regions: Vec<Vec<Point>>,
     triangles: Vec<Vec<[usize; 3]>>,
+    /// Lit preview: each chip's facets (plan-view corners) and their brightness.
+    lit: Vec<Vec<([Point; 3], u8)>>,
+    /// Faceted engine: each chip's facet lines (empty for classic chips).
+    facet_lines: Vec<Vec<Vec<Point>>>,
     autosaved: Option<ChipSettings>,
     pub message: String,
     // view
@@ -40,7 +45,7 @@ impl ChipState {
     pub fn new() -> ChipState {
         let settings = autosave_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| io::parse_chip(&t).ok()).unwrap_or_default();
         ChipState { autosaved: Some(settings.clone()), settings, path: None, past: vec![], future: vec![], selected: None, show_grid: true, tab: ChipTab::Generate, drag: None, drag_before: None,
-            cached_for: None, regions: vec![], triangles: vec![], message: String::new(), zoom: 4.0, origin: Pos2::ZERO, fitted: false, cursor_mm: None, presets: Library::load("chip-presets.json"), thumbs: vec![] }
+            cached_for: None, regions: vec![], triangles: vec![], lit: vec![], facet_lines: vec![], message: String::new(), zoom: 4.0, origin: Pos2::ZERO, fitted: false, cursor_mm: None, presets: Library::load("chip-presets.json"), thumbs: vec![] }
     }
     fn change(&mut self, next: ChipSettings) {
         if next == self.settings { return; }
@@ -56,6 +61,9 @@ impl ChipState {
         if self.cached_for.as_ref() == Some(&self.settings) { return; }
         self.regions = chip_regions(&self.settings);
         self.triangles = self.regions.iter().map(|p| triangulate(p)).collect();
+        let facets = chip_facets(&self.settings);
+        self.lit = facets.iter().map(|c| c.lit_triangles(3.5)).collect();
+        self.facet_lines = facets.iter().map(|c| if self.settings.faceted.is_some() { c.facet_lines() } else { vec![] }).collect();
         self.cached_for = Some(self.settings.clone());
         if self.selected.is_some_and(|i| i >= self.regions.len() || self.settings.removed.contains(&i)) { self.selected = None; }
     }
@@ -67,7 +75,7 @@ impl ChipState {
     }
     pub fn chip_count(&self) -> usize { (0..self.regions.len()).filter(|i| !self.settings.removed.contains(i)).count() }
 
-    pub fn new_pattern(&mut self) { let s = ChipSettings::default(); self.change(s); self.path = None; self.selected = None; self.fitted = false; self.message = "New chip pattern. Undo returns to the previous one.".into(); }
+    pub fn new_pattern(&mut self) { let d = ChipSettings::default(); let s = ChipSettings { faceted: Some(Faceted::from_seed(d.seed())), ..d }; self.change(s); self.path = None; self.selected = None; self.fitted = false; self.message = "New chip pattern. Undo returns to the previous one.".into(); }
     pub fn open(&mut self) {
         let Some(path) = rfd::FileDialog::new().add_filter("Chip layout", &["json"]).pick_file() else { return };
         match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| io::parse_chip(&t)) {
@@ -140,6 +148,8 @@ impl App {
         ui.menu_button("View", |ui| {
             if ui.button("Fit page").clicked() { self.chip.fit_page(); ui.close_menu(); }
             ui.checkbox(&mut self.chip.show_grid, "Millimetre grid");
+            let mut lit = self.prefs.chip_lit;
+            if ui.checkbox(&mut lit, "Lit preview").on_hover_text("Shows the cut wood under raking light from the upper left").changed() { self.set_prefs(Prefs { chip_lit: lit, ..self.prefs }); }
             ui.separator();
             ui.menu_button("Theme", |ui| {
                 for id in ThemeId::ALL { if ui.selectable_label(self.prefs.theme == id, id.theme().name).clicked() { self.set_prefs(Prefs { theme: id, ..self.prefs }); ui.close_menu(); } }
@@ -167,6 +177,57 @@ impl App {
         let t = self.t();
         let s = self.chip.settings.clone();
         section(ui, t, "Composition");
+        let mut faceted = s.faceted.is_some();
+        segmented(ui, t, &[(true, "Faceted"), (false, "Classic")], &mut faceted);
+        if faceted != s.faceted.is_some() {
+            let f = if faceted { Some(Faceted::from_seed(s.seed())) } else { None };
+            self.chip.change(ChipSettings { faceted: f, ..s.regenerated() }); self.chip.selected = None;
+        } else if let Some(f) = s.faceted { self.faceted_controls(ui, &s, f); } else { self.classic_controls(ui, &s); }
+
+        self.chip_page_and_edit(ui);
+    }
+
+    /// Centre, count and border for the faceted engine.
+    fn faceted_controls(&mut self, ui: &mut egui::Ui, s: &ChipSettings, f: Faceted) {
+        let t = self.t();
+        ui.label(egui::RichText::new("A rosette, drawn with the facet lines you carve to, inside an optional border. Edit afterwards on the grid.").small().color(t.dim));
+        let mut n = f;
+        egui::Grid::new("chip-facets").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Centre");
+            egui::ComboBox::from_id_salt("chip-centre").width(170.0).selected_text(n.centre.label()).show_ui(ui, |ui| {
+                for c in Centre::ALL { if ui.selectable_label(n.centre == c, c.label()).clicked() && n.centre != c { n.centre = c; n.count = c.default_count(); } }
+            });
+            ui.end_row();
+            ui.label(n.centre.count_label());
+            ui.add(egui::DragValue::new(&mut n.count).range(n.centre.counts()).speed(0.1));
+            ui.end_row();
+            ui.label("Border");
+            egui::ComboBox::from_id_salt("chip-facet-border").width(170.0).selected_text(n.border.map_or("None", |b| b.label())).show_ui(ui, |ui| {
+                ui.selectable_value(&mut n.border, None, "None");
+                for b in BorderStyle::ALL { ui.selectable_value(&mut n.border, Some(b), b.label()); }
+            });
+            ui.end_row();
+        });
+        if n != f { self.chip.change(ChipSettings { faceted: Some(n), removed: vec![], edits: Default::default(), ..s.clone() }); self.chip.selected = None; }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("Variation {}", s.seed())).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Generate variation").on_hover_text("Picks another centre, count and border").clicked() {
+                    // step until the permutation actually changes
+                    let mut seed = s.seed();
+                    let next = loop { seed = seed.wrapping_add(1); let p = Faceted::from_seed(seed); if p != f { break p; } };
+                    self.chip.change(ChipSettings { seed: Some(seed), faceted: Some(next), ..s.regenerated() }); self.chip.selected = None;
+                }
+            });
+        });
+        ui.label(egui::RichText::new("Changing the composition clears hand edits; Undo (Ctrl+Z) brings them back.").small().color(t.dim));
+    }
+
+    /// The classic generator's controls, unchanged.
+    fn classic_controls(&mut self, ui: &mut egui::Ui, s: &ChipSettings) {
+        let t = self.t();
+        let s = s.clone();
         ui.label(egui::RichText::new("One seed chooses a centre, a border rhythm and the corner treatment. Edit afterwards on the grid.").small().color(t.dim));
         let mut fam = s.family;
         egui::ComboBox::from_id_salt("chip-family").width(ui.available_width()).selected_text(fam.label()).show_ui(ui, |ui| {
@@ -187,7 +248,11 @@ impl App {
             });
         });
         ui.label(egui::RichText::new("Generating clears hand edits; Undo (Ctrl+Z) brings them back.").small().color(t.dim));
+    }
 
+    fn chip_page_and_edit(&mut self, ui: &mut egui::Ui) {
+        let t = self.t();
+        let s = self.chip.settings.clone();
         section(ui, t, "Grid and page");
         let max_grid = 30f64.min(s.size / 6.0).floor();
         let (mut step, mut size) = (s.step(), s.size);
@@ -237,6 +302,7 @@ impl App {
         self.chip.refresh();
         self.chip.autosave();
         let cc = self.canvas_colors();
+        let lit = self.prefs.chip_lit;
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = resp.rect;
         let st = &mut self.chip;
@@ -250,13 +316,15 @@ impl App {
         let size = st.settings.size; let step = st.settings.step();
         let page = Rect::from_min_max(st.to_screen(pt(0.0, 0.0)), st.to_screen(pt(size, size)));
         for (grow, alpha) in [(10.0, 10u8), (5.0, 16), (2.0, 24)] { painter.rect_filled(page.expand(grow).translate(Vec2::new(0.0, grow * 0.4)), grow + 2.0, Color32::from_black_alpha(alpha)); }
-        painter.rect_filled(page, 2.0, cc.paper);
+        painter.rect_filled(page, 2.0, if lit { wood(shade(&[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])) } else { cc.paper });
         if st.show_grid && step * st.zoom as f64 > 3.0 {
+            // on the lit wood the grid is a faint darker line, so it doesn't fight the facets
+            let grid_col = if lit { Color32::from_black_alpha(28) } else { cc.grid };
             let mut v = 0.0; let mut k = 0;
             while v <= size + 1e-9 {
                 let w = if k % 5 == 0 { 0.9 } else { 0.5 };
-                let a = st.to_screen(pt(v, 0.0)); painter.line_segment([Pos2::new(a.x, page.top()), Pos2::new(a.x, page.bottom())], Stroke::new(w, cc.grid));
-                let b = st.to_screen(pt(0.0, v)); painter.line_segment([Pos2::new(page.left(), b.y), Pos2::new(page.right(), b.y)], Stroke::new(w, cc.grid));
+                let a = st.to_screen(pt(v, 0.0)); painter.line_segment([Pos2::new(a.x, page.top()), Pos2::new(a.x, page.bottom())], Stroke::new(w, grid_col));
+                let b = st.to_screen(pt(0.0, v)); painter.line_segment([Pos2::new(page.left(), b.y), Pos2::new(page.right(), b.y)], Stroke::new(w, grid_col));
                 v += step; k += 1;
             }
         }
@@ -265,15 +333,28 @@ impl App {
         for (i, poly) in st.regions.iter().enumerate() {
             if st.settings.removed.contains(&i) { continue; }
             let pts: Vec<Pos2> = poly.iter().map(|p| st.to_screen(*p)).collect();
+            if lit {
+                // raking light: each facet in its own tone; only the selection gets an outline
+                let mut mesh = egui::Mesh::default();
+                for (tri, k) in &st.lit[i] {
+                    let base = mesh.vertices.len() as u32; let col = wood(*k);
+                    for p in tri { mesh.colored_vertex(st.to_screen(*p), col); }
+                    mesh.add_triangle(base, base + 1, base + 2);
+                }
+                painter.add(Shape::mesh(mesh));
+                if st.selected == Some(i) { painter.add(Shape::closed_line(pts, Stroke::new(stroke_w + 0.5, cc.mark))); }
+                continue;
+            }
             let mut mesh = egui::Mesh::default();
             let col = if st.selected == Some(i) { fill_sel } else { fill };
             for p in &pts { mesh.colored_vertex(*p, col); }
             for tri in &st.triangles[i] { mesh.add_triangle(tri[0] as u32, tri[1] as u32, tri[2] as u32); }
             painter.add(Shape::mesh(mesh));
             painter.add(Shape::closed_line(pts, Stroke::new(stroke_w, cc.ink)));
+            for line in &st.facet_lines[i] { painter.add(Shape::line(line.iter().map(|p| st.to_screen(*p)).collect(), Stroke::new(stroke_w * 0.55, cc.ink))); }
         }
         // handles of the selected chip
-        let handles: Vec<(usize, Pos2, String)> = st.selected.and_then(|i| st.regions.get(i)).map(|p| chip_handles(p).into_iter().map(|(k, q, l)| (k, st.to_screen(q), l)).collect()).unwrap_or_default();
+        let handles: Vec<(usize, Pos2, String)> = st.selected.and_then(|i| st.regions.get(i)).filter(|p| st.settings.faceted.is_none() || p.len() <= 6).map(|p| chip_handles(p).into_iter().map(|(k, q, l)| (k, st.to_screen(q), l)).collect()).unwrap_or_default();
         let hover = resp.hover_pos();
         for (_, p, label) in &handles {
             let hot = hover.is_some_and(|h| h.distance(*p) < 10.0);
@@ -322,8 +403,16 @@ impl App {
         let over_chip = hover.is_some_and(|h| hit_chip(&st.regions, &st.settings.removed, st.to_mm(h)).is_some());
         if handles.iter().any(|(_, p, _)| hover.is_some_and(|h| h.distance(*p) < 10.0)) { ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair); }
         else if over_chip { ui.ctx().set_cursor_icon(egui::CursorIcon::Move); }
+
+        // a small toggle tucked in the canvas corner
+        let at = Rect::from_min_size(rect.left_bottom() + Vec2::new(12.0, -36.0), Vec2::new(96.0, 24.0));
+        let button = egui::Button::new(egui::RichText::new("Lit preview").small()).selected(lit);
+        if ui.put(at, button).on_hover_text("Raking light from the upper left, as the cut wood would look (also in View)").clicked() { self.set_prefs(Prefs { chip_lit: !lit, ..self.prefs }); }
     }
 }
+
+/// Wood tone for a facet brightness from `facets::shade`.
+fn wood(k: u8) -> Color32 { let k = k as u32; Color32::from_rgb((k * 235 / 255) as u8, (k * 200 / 255) as u8, (k * 150 / 255) as u8) }
 
 fn hit_chip(regions: &[Vec<Point>], removed: &[usize], mm: Point) -> Option<usize> {
     regions.iter().enumerate().rev().find(|(i, p)| !removed.contains(i) && scroll_core::outline::inside(mm, p)).map(|(i, _)| i)

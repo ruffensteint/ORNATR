@@ -4,6 +4,7 @@
 use crate::geometry::{pt, Point};
 use crate::growth::Mulberry;
 use crate::outline::intersection;
+use crate::facets::{from_outline, square_border, BorderStyle, Centre, Chip};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
@@ -30,11 +31,13 @@ pub struct ChipSettings {
     pub border_seed: Option<u32>,
     pub border_version: Option<u8>,
     pub traditional: Option<bool>,
+    /// The faceted engine (rosette plus border, with facet lines); None = the classic generator.
+    pub faceted: Option<Faceted>,
 }
 
 impl Default for ChipSettings {
     fn default() -> Self {
-        ChipSettings { family: ChipFamily::Star, count: 6, size: 100.0, removed: vec![], seed: Some(1248), grid: Some(5.0), edits: BTreeMap::new(), grammar: Some(2), border_seed: None, border_version: Some(1), traditional: Some(true) }
+        ChipSettings { family: ChipFamily::Star, count: 6, size: 100.0, removed: vec![], seed: Some(1248), grid: Some(5.0), edits: BTreeMap::new(), grammar: Some(2), border_seed: None, border_version: Some(1), traditional: Some(true), faceted: None }
     }
 }
 
@@ -55,6 +58,57 @@ impl ChipSettings {
     pub fn visible(&self) -> Vec<(usize, Vec<Point>)> {
         chip_regions(self).into_iter().enumerate().filter(|(i, _)| !self.removed.contains(i)).collect()
     }
+}
+
+/// A faceted composition: a rosette centred on the page inside an optional square border.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Faceted { pub centre: Centre, pub count: u32, pub border: Option<BorderStyle> }
+
+impl Faceted {
+    /// One seed picks the centre, its count and the border, so "Generate
+    /// variation" walks through the permutations.
+    pub fn from_seed(seed: u32) -> Faceted {
+        let mut rng = Mulberry(seed);
+        let centre = Centre::ALL[(rng.next() * 4.0) as usize % 4];
+        // classic counts: the default, or up to two steps of 2 either side
+        let step = (rng.next() * 5.0) as i64 - 2;
+        let count = (centre.default_count() as i64 + 2 * step).clamp(*centre.counts().start() as i64, *centre.counts().end() as i64) as u32;
+        let border = [None, Some(BorderStyle::Zigzag), Some(BorderStyle::Arcade), Some(BorderStyle::Almond)][(rng.next() * 4.0) as usize % 4];
+        Faceted { centre, count, border }
+    }
+}
+
+/// Band width of the faceted border and the page margin, from the page size.
+fn faceted_layout(size: f64) -> (f64, f64) { ((size * 0.13).max(8.0), size * 0.03) }
+
+/// The faceted chips as generated (no hand edits).
+fn faceted_base(s: &ChipSettings, f: &Faceted) -> Vec<Chip> {
+    let (band, margin) = faceted_layout(s.size);
+    let c = pt(s.size / 2.0, s.size / 2.0);
+    let mut chips = vec![];
+    let radius = match f.border {
+        Some(style) => { chips.extend(square_border(style, pt(margin, margin), s.size - 2.0 * margin, band)); s.size / 2.0 - margin - band - s.size * 0.04 }
+        None => s.size / 2.0 - margin,
+    };
+    let mut all = f.centre.build(c, radius, f.count).chips;
+    all.extend(chips);
+    all
+}
+
+/// Every chip with its facets, hand edits applied. A chip that was only moved
+/// keeps its own facets; a reshaped one is cut to its centroid. Classic chips
+/// are read from their outlines.
+pub fn chip_facets(s: &ChipSettings) -> Vec<Chip> {
+    let Some(f) = s.faceted else { return chip_regions(s).iter().map(|p| from_outline(p)).collect() };
+    faceted_base(s, &f).into_iter().enumerate().map(|(i, chip)| match s.edits.get(&i) {
+        None => chip,
+        Some(e) if e.len() == chip.outline.len() => {
+            let d = pt(e[0].x - chip.outline[0].x, e[0].y - chip.outline[0].y);
+            let moved = e.iter().zip(&chip.outline).all(|(a, b)| (a.x - b.x - d.x).abs() < 1e-6 && (a.y - b.y - d.y).abs() < 1e-6);
+            if moved { Chip { outline: e.clone(), floor: chip.floor.iter().map(|q| pt(q.x + d.x, q.y + d.y)).collect(), corners: chip.corners } } else { from_outline(e) }
+        }
+        Some(e) => from_outline(e),
+    }).collect()
 }
 
 pub const BORDER_NAMES: [&str; 6] = ["Diamond chain", "Paired chevrons", "Braided band", "Alternating rosettes", "Stepped ribbon", "Paired fans"];
@@ -78,6 +132,7 @@ pub fn valid_chip(points: &[Point]) -> bool {
 }
 
 pub fn chip_regions(s: &ChipSettings) -> Vec<Vec<Point>> {
+    if let Some(f) = s.faceted { return faceted_base(s, &f).into_iter().enumerate().map(|(i, c)| s.edits.get(&i).cloned().unwrap_or(c.outline)).collect(); }
     if s.grid.is_some() { return grid_regions(s).into_iter().enumerate().map(|(i, p)| s.edits.get(&i).cloned().unwrap_or(p)).collect(); }
     let (r, c) = (s.size * 0.42, s.size / 2.0);
     let count = s.count as f64;
@@ -292,6 +347,13 @@ fn point_text(p: &Point) -> String { format!("{} {}", fixed3(p.x), fixed3(p.y)) 
 
 /// The pattern at actual size: retained chip outlines only, no grid.
 pub fn chip_svg(s: &ChipSettings) -> String {
+    if let Some(f) = s.faceted {
+        // outlines, then the thinner facet lines a carver follows down to the floor
+        let chips: Vec<Chip> = chip_facets(s).into_iter().enumerate().filter(|(i, _)| !s.removed.contains(i)).map(|(_, c)| c).collect();
+        let outlines: String = chips.iter().map(|c| format!("<path d=\"M {} Z\"/>", c.outline.iter().map(point_text).collect::<Vec<_>>().join(" L "))).collect();
+        let facets: String = chips.iter().flat_map(|c| c.facet_lines()).map(|l| format!("<path d=\"M {}\"/>", l.iter().map(point_text).collect::<Vec<_>>().join(" L "))).collect();
+        return format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}mm\" height=\"{0}mm\" viewBox=\"0 0 {0} {0}\"><title>Chip carving {1}</title><g fill=\"none\" stroke=\"#000\" stroke-linejoin=\"round\" stroke-linecap=\"round\"><g stroke-width=\"0.25\">{2}</g><g stroke-width=\"0.15\">{3}</g></g></svg>", s.size, f.centre.key(), outlines, facets);
+    }
     let fam = s.family.key();
     let paths: String = s.visible().iter().map(|(_, p)| format!("<path d=\"M {} Z\"/>", p.iter().map(point_text).collect::<Vec<_>>().join(" L "))).collect();
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}mm\" height=\"{0}mm\" viewBox=\"0 0 {0} {0}\"><title>Chip carving {1}</title><g fill=\"none\" stroke=\"#000\" stroke-width=\"0.25\" stroke-linejoin=\"round\">{2}</g></svg>", s.size, fam, paths)

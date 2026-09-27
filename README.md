@@ -15,6 +15,9 @@ ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, writ
   - **Layers and carving guides:** over/under layering and carving guides.
   - **Root joins** (Canvas settings): *Exact* rounds the crotch where a leaf or branch grows from its stem with a true fillet (adjustable radius) and tidies tangled outlines; *Smooth* and *Classic* are the earlier styles.
 - **Chip workspace:** a chip-carving pattern generator with its own preset library.
+  - **Faceted engine** (the default for new patterns): each chip is drawn with the facet lines you carve to, down to its deepest point or deep line. Pick a centre (faceted star, compass petals, fan and rings, or swirl) and its count, and a square border (zigzag ribbon, arcade of fans or almond chain), or let *Generate variation* step through the combinations.
+  - **Lit preview:** shows the cut wood under raking light, to judge how a pattern will read before carving.
+  - **Classic engine:** the earlier generator, kept unchanged; existing chip layouts open with it.
 - **Themes:** Graphite (default), Midnight, Slate, Studio, Paper and Sage.
 
 Layouts save as `.ornatr`, the same format as the earlier browser edition; `.scrollworks` and `.json` layouts still open. Old stamped motifs are converted to grown leaves.

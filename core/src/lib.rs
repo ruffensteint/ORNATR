@@ -12,6 +12,7 @@ pub mod layers;
 pub mod transform;
 pub mod model;
 pub mod chip;
+pub mod facets;
 pub mod bud;
 pub mod skeleton;
 pub mod wraps;

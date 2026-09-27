@@ -115,7 +115,8 @@ pub fn save(l: &Layout) -> String {
 }
 
 // ---------- chip layouts ----------
-use scroll_core::chip::{ChipFamily, ChipSettings};
+use scroll_core::chip::{ChipFamily, ChipSettings, Faceted};
+use scroll_core::facets::{BorderStyle, Centre};
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
@@ -129,6 +130,10 @@ pub struct ChipFile {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub border_seed: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub border_version: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub traditional: Option<bool>,
+    /// Faceted engine: rosette key, its count, and the border key ("none" for no border).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_centre: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_count: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_border: Option<String>,
 }
 
 fn whole(v: f64, lo: f64, hi: f64) -> bool { v.is_finite() && v.fract() == 0.0 && v >= lo && v <= hi }
@@ -148,13 +153,25 @@ pub fn parse_chip(text: &str) -> Result<ChipSettings, String> {
         if i >= 10000 || v.len() < 3 || v.len() > 200 || !v.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.x >= 0.0 && p.y >= 0.0 && p.x <= f.size && p.y <= f.size) { return bad("Invalid chip corner."); }
         edits.insert(i, v.iter().map(|p| pt(p.x, p.y)).collect());
     }
+    let faceted = match &f.facet_centre {
+        None => None,
+        Some(k) => {
+            let Some(centre) = Centre::from_key(k) else { return bad("Unsupported chip pattern.") };
+            let count = f.facet_count.unwrap_or(centre.default_count() as f64);
+            if !whole(count, *centre.counts().start() as f64, *centre.counts().end() as f64) { return bad("Unsupported chip pattern."); }
+            let border = match f.facet_border.as_deref() { None | Some("none") => None, Some(b) => match BorderStyle::from_key(b) { Some(b) => Some(b), None => return bad("Unsupported chip border.") } };
+            Some(Faceted { centre, count: count as u32, border })
+        }
+    };
     Ok(ChipSettings { family, count: f.count as u32, size: f.size, removed: f.removed.iter().map(|n| *n as usize).collect(), seed: f.seed.map(|s| s as u32), grid: f.grid, edits,
-        grammar: f.grammar.map(|v| v as u8), border_seed: f.border_seed.map(|s| s as u32), border_version: f.border_version.map(|v| v as u8), traditional: f.traditional })
+        grammar: f.grammar.map(|v| v as u8), border_seed: f.border_seed.map(|s| s as u32), border_version: f.border_version.map(|v| v as u8), traditional: f.traditional, faceted })
 }
 
 pub fn save_chip(s: &ChipSettings) -> String {
     let f = ChipFile { family: s.family.key().into(), count: s.count as f64, size: s.size, removed: s.removed.iter().map(|n| *n as f64).collect(), seed: s.seed.map(|v| v as f64), grid: s.grid,
         edits: if s.edits.is_empty() { None } else { Some(s.edits.iter().map(|(k, v)| (k.to_string(), v.iter().map(|p| P { x: p.x, y: p.y }).collect())).collect()) },
-        grammar: s.grammar.map(|v| v as f64), border_seed: s.border_seed.map(|v| v as f64), border_version: s.border_version.map(|v| v as f64), traditional: s.traditional };
+        grammar: s.grammar.map(|v| v as f64), border_seed: s.border_seed.map(|v| v as f64), border_version: s.border_version.map(|v| v as f64), traditional: s.traditional,
+        facet_centre: s.faceted.map(|f| f.centre.key().into()), facet_count: s.faceted.map(|f| f.count as f64),
+        facet_border: s.faceted.map(|f| f.border.map_or("none", |b| b.key()).into()) };
     serde_json::to_string_pretty(&f).unwrap()
 }

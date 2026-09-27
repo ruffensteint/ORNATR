@@ -183,7 +183,9 @@ pub struct Prefs { pub theme: ThemeId, pub white_page: bool, pub ui_scale: f32, 
     /// How roots are drawn: "classic", "smooth" or "exact".
     pub joins: Joins,
     /// Fillet radius in mm for exact joins.
-    pub fillet: f32 }
+    pub fillet: f32,
+    /// Chip workspace: raking-light preview of the cut instead of flat fills.
+    pub chip_lit: bool }
 
 /// The root-join drawing engine chosen in the Canvas settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,7 +195,7 @@ impl Joins {
     pub fn from_key(k: &str) -> Option<Joins> { match k { "classic" => Some(Joins::Classic), "smooth" => Some(Joins::Smooth), "exact" => Some(Joins::Exact), _ => None } }
 }
 
-impl Default for Prefs { fn default() -> Self { Prefs { theme: ThemeId::Graphite, white_page: false, ui_scale: 1.0, chip: false, joins: Joins::Exact, fillet: 0.8 } } }
+impl Default for Prefs { fn default() -> Self { Prefs { theme: ThemeId::Graphite, white_page: false, ui_scale: 1.0, chip: false, joins: Joins::Exact, fillet: 0.8, chip_lit: false } } }
 
 impl Prefs {
     /// The core join style these preferences ask for.
@@ -217,6 +219,7 @@ impl Prefs {
                 "workspace" => p.chip = v.trim() == "chip",
                 "joins" => if let Some(j) = Joins::from_key(v.trim()) { p.joins = j; },
                 "fillet" => if let Ok(r) = v.trim().parse::<f32>() { p.fillet = r.clamp(0.3, 1.5); },
+                "chip_lit" => p.chip_lit = v.trim() == "true",
                 "ui_scale" => if let Ok(s) = v.trim().parse::<f32>() { p.ui_scale = s.clamp(0.8, 1.5); },
                 _ => {}
             }
@@ -226,6 +229,6 @@ impl Prefs {
     pub fn save(&self) {
         let Some(f) = prefs_path() else { return };
         if let Some(dir) = f.parent() { let _ = std::fs::create_dir_all(dir); }
-        let _ = std::fs::write(f, format!("theme={}\nwhite_page={}\nui_scale={:.2}\nworkspace={}\njoins={}\nfillet={:.2}\n", self.theme.key(), self.white_page, self.ui_scale, if self.chip { "chip" } else { "scroll" }, self.joins.key(), self.fillet));
+        let _ = std::fs::write(f, format!("theme={}\nwhite_page={}\nui_scale={:.2}\nworkspace={}\njoins={}\nfillet={:.2}\nchip_lit={}\n", self.theme.key(), self.white_page, self.ui_scale, if self.chip { "chip" } else { "scroll" }, self.joins.key(), self.fillet, self.chip_lit));
     }
 }
