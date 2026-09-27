@@ -2327,6 +2327,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ornatr"
+version = "0.2.0"
+dependencies = [
+ "eframe",
+ "rfd",
+ "scroll_core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2753,17 +2764,6 @@ name = "scroll_core"
 version = "0.1.0"
 dependencies = [
  "i_overlay",
-]
-
-[[package]]
-name = "scrollworks"
-version = "0.2.0"
-dependencies = [
- "eframe",
- "rfd",
- "scroll_core",
- "serde",
- "serde_json",
 ]
 
 [[package]]

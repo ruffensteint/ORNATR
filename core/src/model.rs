@@ -1,4 +1,4 @@
-//! A ScrollWorks layout: page, backbones, per-backbone growth, shoot edits,
+//! An ORNATR layout: page, backbones, per-backbone growth, shoot edits,
 //! kept parts and legacy stamps; growing it; presets; SVG export.
 use crate::geometry::{arc_table, distance, pt, Curve, Point};
 use crate::growth::{grow_backbone, GrowInput, GrowthPart, GrowthResult, GrowthSettings};
@@ -177,12 +177,12 @@ impl Layout {
     pub fn svg_joins(&self, joins: JoinStyle) -> String {
         let d = joins.draw(&self.grow());
         let backbone = if self.print_backbone { self.curves.iter().map(|c| format!("<path d=\"M {} {} C {} {} {} {} {} {}\" stroke-width=\".35\"/>", c[0].x, c[0].y, c[1].x, c[1].y, c[2].x, c[2].y, c[3].x, c[3].y)).collect::<String>() } else { String::new() };
-        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}mm\" height=\"{h}mm\" viewBox=\"0 0 {w} {h}\"><title>ScrollWorks pattern</title><g fill=\"none\" stroke=\"#000\" stroke-linecap=\"round\" stroke-linejoin=\"round\">{backbone}<path d=\"{}\" stroke-width=\".35\"/><path d=\"{}\" stroke-width=\".2\"/></g></svg>", path_data(&d.outline, false), path_data(&d.folds, false), w = self.width, h = self.height)
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}mm\" height=\"{h}mm\" viewBox=\"0 0 {w} {h}\"><title>ORNATR pattern</title><g fill=\"none\" stroke=\"#000\" stroke-linecap=\"round\" stroke-linejoin=\"round\">{backbone}<path d=\"{}\" stroke-width=\".35\"/><path d=\"{}\" stroke-width=\".2\"/></g></svg>", path_data(&d.outline, false), path_data(&d.folds, false), w = self.width, h = self.height)
     }
     /// Carving guides SVG: visible edges, raised ridges, recessed creases.
     pub fn carving_svg(&self) -> String {
         let g = carving_guides(&self.grow());
-        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}mm\" height=\"{h}mm\" viewBox=\"0 0 {w} {h}\"><title>ScrollWorks suggested carving guides</title><desc>Solid black: visible edges. Blue dashed: suggested raised ridges. Red dotted: recessed creases. Review before carving; not routing toolpaths.</desc><g fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path id=\"visible-edges\" d=\"{}\" stroke=\"black\" stroke-width=\".35\"/><path id=\"raised-ridges\" d=\"{}\" stroke=\"#246a9b\" stroke-width=\".25\" stroke-dasharray=\"2 1\"/><path id=\"recessed-creases\" d=\"{}\" stroke=\"#a24434\" stroke-width=\".25\" stroke-dasharray=\".4 .8\"/></g></svg>", path_data(&g.outline, false), path_data(&g.ridges, false), path_data(&g.creases, false), w = self.width, h = self.height)
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}mm\" height=\"{h}mm\" viewBox=\"0 0 {w} {h}\"><title>ORNATR suggested carving guides</title><desc>Solid black: visible edges. Blue dashed: suggested raised ridges. Red dotted: recessed creases. Review before carving; not routing toolpaths.</desc><g fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path id=\"visible-edges\" d=\"{}\" stroke=\"black\" stroke-width=\".35\"/><path id=\"raised-ridges\" d=\"{}\" stroke=\"#246a9b\" stroke-width=\".25\" stroke-dasharray=\"2 1\"/><path id=\"recessed-creases\" d=\"{}\" stroke=\"#a24434\" stroke-width=\".25\" stroke-dasharray=\".4 .8\"/></g></svg>", path_data(&g.outline, false), path_data(&g.ridges, false), path_data(&g.creases, false), w = self.width, h = self.height)
     }
 }
 

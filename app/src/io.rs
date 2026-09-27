@@ -94,7 +94,7 @@ fn growth_out(g: &GrowthSettings) -> G {
 }
 
 pub fn parse(text: &str) -> Result<Layout, String> {
-    let f: File = serde_json::from_str(text).map_err(|e| format!("Not a ScrollWorks layout: {e}"))?;
+    let f: File = serde_json::from_str(text).map_err(|e| format!("Not an ORNATR layout: {e}"))?;
     if f.version != 1 { return Err("Unsupported layout version.".into()); }
     if !(40.0..=1000.0).contains(&f.width) || !(40.0..=1000.0).contains(&f.height) { return Err("Page size must be 40–1000 mm.".into()); }
     let mut curves = vec![curve(&f.curve)]; curves.extend(f.extra_curves.iter().map(curve));

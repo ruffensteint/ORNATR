@@ -1,9 +1,9 @@
 [package]
-name = "scrollworks"
+name = "ornatr"
 version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "ScrollWorks: procedural acanthus scroll patterns for carving (native desktop app)."
+description = "ORNATR: procedural acanthus scroll patterns for carving (native desktop app)."
 
 [dependencies]
 scroll_core = { path = "../core" }

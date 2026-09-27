@@ -1,7 +1,9 @@
 target/
 build-log.txt
 test-log.txt
+ORNATR.exe
 ScrollWorks.exe
+*.ornatr
 *.scrollworks
 references/
 layouts/

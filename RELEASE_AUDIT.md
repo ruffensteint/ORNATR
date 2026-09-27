@@ -15,13 +15,13 @@ THIRD_PARTY_NOTICES.md inventories the installed dependencies and their bundled 
 
 The browser edition's source files were replaced with the native Rust edition (`core/`, `app/`, the Cargo workspace and the Windows build scripts). The license, copying, branding and attribution terms are unchanged. The browser edition stays in the Git history of this public repository. No private hosting history was added.
 
-Excluded: reference images, reference SVG collections, personal layouts and designs, screenshots, build output (`target/`, `ScrollWorks.exe`), build and test logs, and local settings (`%APPDATA%\ScrollWorks`). The golden test data in `core/tests/golden/` is generator output from synthetic test layouts and chip settings, not reference artwork. `core/src/profiles.rs` contains the same reference-derived leaf geometry that was already published in the browser edition, under the permission recorded above.
+Excluded: reference images, reference SVG collections, personal layouts and designs, screenshots, build output (`target/`, `ORNATR.exe`), build and test logs, and local settings (`%APPDATA%\ORNATR`). The golden test data in `core/tests/golden/` is generator output from synthetic test layouts and chip settings, not reference artwork. `core/src/profiles.rs` contains the same reference-derived leaf geometry that was already published in the browser edition, under the permission recorded above.
 
-The geometry tests pass on Linux (`cargo test --release -p scroll_core`). The desktop program is built and run on Windows with `Build ScrollWorks.cmd`. THIRD_PARTY_NOTICES.md lists the direct Rust dependencies. A complete crate inventory should be generated before any binary is distributed.
+The geometry tests pass on Linux (`cargo test --release -p scroll_core`). The desktop program is built and run on Windows with `Build ORNATR.cmd`. THIRD_PARTY_NOTICES.md lists the direct Rust dependencies. A complete crate inventory should be generated before any binary is distributed.
 
 
 # Release review: exact root joins, 2026-09-25
 
-The geometry crate now depends on i_overlay 9 (MIT OR Apache-2.0) for exact polygon booleans. THIRD_PARTY_NOTICES.md lists the direct Rust dependencies; THIRD_PARTY_LICENSES.md, generated from `Cargo.lock` by `scripts/third-party-licenses.ps1`, lists every crate compiled into the Windows executable with its license text and must ship with any distributed `ScrollWorks.exe`.
+The geometry crate now depends on i_overlay 9 (MIT OR Apache-2.0) for exact polygon booleans. THIRD_PARTY_NOTICES.md lists the direct Rust dependencies; THIRD_PARTY_LICENSES.md, generated from `Cargo.lock` by `scripts/third-party-licenses.ps1`, lists every crate compiled into the Windows executable with its license text and must ship with any distributed `ORNATR.exe`.
 
 Excluded as before: reference images and SVG collections, personal layouts and designs, screenshots, build output, logs and local settings. Unpublished leaf-model study code and development notes are also excluded.

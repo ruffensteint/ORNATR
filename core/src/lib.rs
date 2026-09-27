@@ -1,4 +1,4 @@
-//! ScrollWorks core: procedural acanthus scroll geometry for carving patterns.
+//! ORNATR core: procedural acanthus scroll geometry for carving patterns.
 //! Used by the native desktop app; the only dependency is i_overlay (exact booleans).
 pub mod geometry;
 pub mod outline;

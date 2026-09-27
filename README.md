@@ -1,6 +1,6 @@
-# ScrollWorks
+# ORNATR
 
-A desktop carving design tool for Windows, written in Rust. Generate acanthus scrollwork from editable backbones, compose chip-carving patterns, place library leaves and buds, and export designs as SVG at physical millimetre sizes. All generation runs locally.
+ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, written in Rust. Generate acanthus scrollwork from editable backbones, compose chip-carving patterns, place library leaves and buds, and export designs as SVG at physical millimetre sizes. All generation runs locally.
 
 ## Features
 
@@ -17,22 +17,22 @@ A desktop carving design tool for Windows, written in Rust. Generate acanthus sc
 - **Chip workspace:** a chip-carving pattern generator with its own preset library.
 - **Themes:** Graphite (default), Midnight, Slate, Studio, Paper and Sage.
 
-Layouts save as `.scrollworks` or `.json`, the same format as the earlier browser edition. Old stamped motifs are converted to grown leaves.
+Layouts save as `.ornatr`, the same format as the earlier browser edition; `.scrollworks` and `.json` layouts still open. Old stamped motifs are converted to grown leaves.
 
 ## Build
 
 1. Install Rust from https://rustup.rs.
-2. Run `Build ScrollWorks.cmd`. It writes `build-log.txt` and `ScrollWorks.exe`. The first build downloads libraries and takes several minutes.
+2. Run `Build ORNATR.cmd`. It writes `build-log.txt` and `ORNATR.exe`. The first build downloads libraries and takes several minutes.
 3. Run `Test geometry.cmd` for the geometry tests; results go to `test-log.txt`.
 
-On other platforms, use `cargo build --release -p scrollworks` and `cargo test --release -p scroll_core`.
+On other platforms, use `cargo build --release -p ornatr` and `cargo test --release -p scroll_core`.
 
 ## Layout
 
 - `core/` (`scroll_core`; one dependency, i_overlay, for exact polygon booleans): backbones, grown sweeps, acanthus and library leaves, buds, skeletons, wrapping leaves, joins, layering, carving guides, transforms, chip patterns and SVG export. `tests/` includes golden comparisons against the browser edition's output.
-- `app/` (`scrollworks`): the egui desktop program, with menus, tools, canvas, panels, themes, the chip workspace and presets.
+- `app/` (`ornatr`): the egui desktop program, with menus, tools, canvas, panels, themes, the chip workspace and presets.
 
-Settings and presets are stored in `%APPDATA%\ScrollWorks`.
+Settings and presets are stored in `%APPDATA%\ORNATR` (copied from `%APPDATA%\ScrollWorks` on first run).
 
 ## Browser edition
 
@@ -40,7 +40,7 @@ The earlier TypeScript/React browser edition is retired. Its source remains in t
 
 ## License and attribution
 
-Project-authored software is licensed under GPL-3.0-only. See LICENSE, COPYING.md, THIRD_PARTY_NOTICES.md and BRANDING.md. THIRD_PARTY_LICENSES.md lists every crate compiled into ScrollWorks.exe with its license text, and ships with any distributed executable. Modified distributions must meet the applicable GPL source and notice requirements. Ruffensteint branding does not imply endorsement of forks.
+Project-authored software is licensed under GPL-3.0-only. See LICENSE, COPYING.md, THIRD_PARTY_NOTICES.md and BRANDING.md. THIRD_PARTY_LICENSES.md lists every crate compiled into ORNATR.exe with its license text, and ships with any distributed executable. Modified distributions must meet the applicable GPL source and notice requirements. Ruffensteint branding does not imply endorsement of forks.
 
 ## Limitations
 

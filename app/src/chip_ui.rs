@@ -99,7 +99,7 @@ impl ChipState {
     pub fn fit_page(&mut self) { self.fitted = false; }
     pub fn title(&self) -> String {
         let name = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Chip pattern".into());
-        format!("{name} — ScrollWorks")
+        format!("{name} — ORNATR")
     }
 }
 

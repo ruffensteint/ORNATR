@@ -3,7 +3,7 @@ name = "scroll_core"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "ScrollWorks geometry: backbones, grown sweeps, acanthus leaves, joins and layering. Exact booleans via i_overlay."
+description = "ORNATR geometry: backbones, grown sweeps, acanthus leaves, joins and layering. Exact booleans via i_overlay."
 
 [dependencies]
 i_overlay = "9"

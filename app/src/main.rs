@@ -1,4 +1,4 @@
-//! ScrollWorks — native desktop app. Procedural acanthus scroll patterns for
+//! ORNATR — native desktop app. Procedural acanthus scroll patterns for
 //! carving, drawn with egui (no web engine). Geometry lives in `scroll_core`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -24,10 +24,10 @@ use theme::{Canvas, Joins, Prefs, Theme, ThemeId};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]).with_min_inner_size([900.0, 600.0]).with_title("ScrollWorks"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]).with_min_inner_size([900.0, 600.0]).with_title("ORNATR"),
         ..Default::default()
     };
-    eframe::run_native("ScrollWorks", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("ORNATR", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -227,11 +227,11 @@ impl App {
     // ---------- files ----------
     fn title(&self) -> String {
         let name = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
-        format!("{}{} — ScrollWorks", name, if self.dirty { " •" } else { "" })
+        format!("{}{} — ORNATR", name, if self.dirty { " •" } else { "" })
     }
     fn new_file(&mut self) { self.commit(Layout::starter()); self.path = None; self.dirty = false; self.backbone = 0; self.selected = None; self.fitted = false; }
     fn open(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("ScrollWorks layout", &["scrollworks", "json"]).pick_file() else { return };
+        let Some(path) = rfd::FileDialog::new().add_filter("ORNATR layout", &["ornatr", "scrollworks", "json"]).pick_file() else { return };
         match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| io::parse(&t)) {
             Ok(mut l) => {
                 let legacy = l.items.len();
@@ -273,7 +273,7 @@ impl App {
     }
     fn save(&mut self, choose: bool) {
         let path = if choose || self.path.is_none() {
-            match rfd::FileDialog::new().add_filter("ScrollWorks layout", &["scrollworks"]).set_file_name("pattern.scrollworks").save_file() { Some(p) => p, None => return }
+            match rfd::FileDialog::new().add_filter("ORNATR layout", &["ornatr"]).set_file_name("pattern.ornatr").save_file() { Some(p) => p, None => return }
         } else { self.path.clone().unwrap() };
         match std::fs::write(&path, io::save(&self.layout)) { Ok(()) => { self.path = Some(path); self.dirty = false; self.message = "Saved.".into(); } Err(e) => self.message = format!("Could not save: {e}") }
     }
@@ -384,7 +384,7 @@ impl App {
         let t = self.t();
         egui::TopBottomPanel::top("menu").frame(egui::Frame::none().fill(t.bg).inner_margin(egui::Margin::symmetric(12.0, 6.0))).show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.label(egui::RichText::new("ScrollWorks").family(egui::FontFamily::Name("semibold".into())).size(15.0).color(t.text));
+                ui.label(egui::RichText::new("ORNATR").family(egui::FontFamily::Name("semibold".into())).size(15.0).color(t.text));
                 ui.add_space(10.0);
                 if self.workspace == Workspace::Chip { self.chip_menus(ui); } else {
                 ui.menu_button("File", |ui| {

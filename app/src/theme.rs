@@ -176,7 +176,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Preferences kept between sessions, in %APPDATA%\ScrollWorks\settings.txt.
+/// Preferences kept between sessions, in %APPDATA%\ORNATR\settings.txt.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Prefs { pub theme: ThemeId, pub white_page: bool, pub ui_scale: f32, /// Last workspace was Chip.
     pub chip: bool,
@@ -203,10 +203,7 @@ impl Prefs {
     }
 }
 
-fn prefs_path() -> Option<PathBuf> {
-    let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)?;
-    Some(base.join("ScrollWorks").join("settings.txt"))
-}
+fn prefs_path() -> Option<PathBuf> { crate::presets::app_dir().map(|d| d.join("settings.txt")) }
 
 impl Prefs {
     pub fn load() -> Prefs {

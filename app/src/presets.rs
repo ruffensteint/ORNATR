@@ -1,5 +1,5 @@
 //! "My presets": named designs kept on this computer, one library for scroll
-//! layouts and one for chip layouts, in %APPDATA%\ScrollWorks.
+//! layouts and one for chip layouts, in %APPDATA%\ORNATR.
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -11,9 +11,19 @@ pub struct Preset { pub name: String, /// The layout, in its file format.
 
 pub struct Library { file: &'static str, pub entries: Vec<Preset>, pub selected: Option<usize>, pub name: String, pub message: String, pub deleted: Option<Preset> }
 
+/// %APPDATA%\ORNATR. The first time it's missing, the files kept under the
+/// program's former name (%APPDATA%\ScrollWorks) are copied across, so
+/// settings, presets and the current chip pattern carry over.
 pub fn app_dir() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)?;
-    Some(base.join("ScrollWorks"))
+    let dir = base.join("ORNATR");
+    let old = base.join("ScrollWorks");
+    if !dir.exists() && old.is_dir() && std::fs::create_dir_all(&dir).is_ok() {
+        for entry in std::fs::read_dir(&old).into_iter().flatten().flatten() {
+            if entry.path().is_file() { let _ = std::fs::copy(entry.path(), dir.join(entry.file_name())); }
+        }
+    }
+    Some(dir)
 }
 
 impl Library {
