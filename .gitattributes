@@ -1,3 +1,5 @@
 *.cmd text eol=crlf
 *.rs text eol=lf
 core/tests/golden/*.txt text eol=lf
+*.ico binary
+*.rgba binary

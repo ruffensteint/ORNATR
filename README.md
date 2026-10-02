@@ -16,8 +16,12 @@ ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, writ
   - **Root joins** (Canvas settings): *Exact* rounds the crotch where a leaf or branch grows from its stem with a true fillet (adjustable radius) and tidies tangled outlines; *Smooth* and *Classic* are the earlier styles.
 - **Chip workspace:** a chip-carving pattern generator with its own preset library.
   - **Faceted engine** (the default for new patterns): each chip is drawn with the facet lines you carve to, down to its deepest point or deep line. Pick a centre (faceted star, compass petals, fan and rings, or swirl) and its count, and a square border (zigzag ribbon, arcade of fans or almond chain), or let *Generate variation* step through the combinations.
+  - **Inside the border:** a rosette (with an adjustable centre size) or a field of a square repeat stretched to fill it exactly. Pages can be any proportion; the border follows the page.
+  - **Fill an area:** draw a region freehand, corner by corner, or as a regular polygon, and it fills with a square repeat (node stars, pinwheel, stars and diamonds, sunbursts), keeping clear of the chips already there. The *Flow* layout follows the composition: a band round the motif inside the region, with an optional sawtooth edge row, and fans in the corners; *Grid* is a plain square grid.
+  - **Box builder:** turn a pattern into the lid or front of a box; the other faces start matched to it and each stays an editable pattern. The back and right side follow the front and left until changed. A lit 3D view shows the assembled box from the front-right or back-left, and all panels export at real size on one sheet.
   - **Lit preview:** shows the cut wood under raking light, to judge how a pattern will read before carving.
   - **Classic engine:** the earlier generator, kept unchanged; existing chip layouts open with it.
+- **Page sizes:** presets for carving pieces, box panels and paper, your own saved sizes, millimetres or inches, and a New dialog to choose the size before starting.
 - **Themes:** Graphite (default), Midnight, Slate, Studio, Paper and Sage.
 
 Layouts save as `.ornatr`, the same format as the earlier browser edition; `.scrollworks` and `.json` layouts still open. Old stamped motifs are converted to grown leaves.
@@ -29,6 +33,8 @@ Layouts save as `.ornatr`, the same format as the earlier browser edition; `.scr
 3. Run `Test geometry.cmd` for the geometry tests; results go to `test-log.txt`.
 
 On other platforms, use `cargo build --release -p ornatr` and `cargo test --release -p scroll_core`.
+
+The program icon (`app/assets/ornatr.ico`) is embedded in `ORNATR.exe` by `app/build.rs` using the Windows SDK's resource compiler; without it the program builds without an icon. `scripts/make-icons.ps1` rebuilds the icon files from the press-kit images.
 
 ## Layout
 

@@ -4,6 +4,7 @@
 
 mod chip_ui;
 mod io;
+mod page_sizes;
 mod presets;
 mod theme;
 
@@ -24,7 +25,9 @@ use theme::{Canvas, Joins, Prefs, Theme, ThemeId};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]).with_min_inner_size([900.0, 600.0]).with_title("ORNATR"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]).with_min_inner_size([900.0, 600.0]).with_title("ORNATR")
+            // the title bar and taskbar icon (the exe's own icon is embedded by build.rs)
+            .with_icon(std::sync::Arc::new(egui::IconData { rgba: include_bytes!("../assets/ornatr-128.rgba").to_vec(), width: 128, height: 128 })),
         ..Default::default()
     };
     eframe::run_native("ORNATR", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
@@ -96,6 +99,10 @@ struct App {
     skeleton: Option<Skeleton>,
     skel_seed: u32,
     skel_thumbs: Vec<Option<Vec<Vec<Point>>>>,
+    /// Preset and saved page sizes; the New dialog while it is open; the size the next new scroll pattern gets.
+    page_sizes: page_sizes::PageSizes,
+    new_dialog: Option<page_sizes::NewDialog>,
+    new_size: Option<(f64, f64)>,
 }
 
 impl App {
@@ -105,7 +112,7 @@ impl App {
         let layout = Layout::starter();
         let mut app = App { layout, path: None, dirty: false, past: vec![], future: vec![], tool: Tool::Select, tab: Tab::Properties, backbone: 0, selected: None, carving: false, show_guides: true, grid: false,
             grown: GrowthResult::default(), drawing: Drawing { outline: vec![], folds: vec![] }, smooth_due: false, guides: None, stale: true, zoom: 3.0, origin: Pos2::ZERO, fitted: false, drag: None, drag_before: None, message: String::new(), cursor_mm: None, shown_title: String::new(), pending: None, allow_close: false, prefs, applied: None, scale_draft: prefs.ui_scale, fillet_draft: prefs.fillet,
-            workspace: if prefs.chip { Workspace::Chip } else { Workspace::Scroll }, chip: chip_ui::ChipState::new(), scroll_presets: presets::Library::load("scroll-presets.json"), scroll_thumbs: vec![], skeleton: None, skel_seed: 0, skel_thumbs: vec![None; Skeleton::ALL.len()] };
+            workspace: if prefs.chip { Workspace::Chip } else { Workspace::Scroll }, chip: chip_ui::ChipState::new(), scroll_presets: presets::Library::load("scroll-presets.json"), scroll_thumbs: vec![], skeleton: None, skel_seed: 0, skel_thumbs: vec![None; Skeleton::ALL.len()], page_sizes: page_sizes::PageSizes::load(), new_dialog: None, new_size: None };
         app.regrow();
         app
     }
@@ -229,7 +236,7 @@ impl App {
         let name = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
         format!("{}{} — ORNATR", name, if self.dirty { " •" } else { "" })
     }
-    fn new_file(&mut self) { self.commit(Layout::starter()); self.path = None; self.dirty = false; self.backbone = 0; self.selected = None; self.fitted = false; }
+    fn new_file(&mut self) { let l = match self.new_size.take() { Some((w, h)) => resized(&Layout::starter(), w, h), None => Layout::starter() }; self.commit(l); self.path = None; self.dirty = false; self.backbone = 0; self.selected = None; self.fitted = false; }
     fn open(&mut self) {
         let Some(path) = rfd::FileDialog::new().add_filter("ORNATR layout", &["ornatr", "scrollworks", "json"]).pick_file() else { return };
         match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| io::parse(&t)) {
@@ -240,6 +247,25 @@ impl App {
                 self.message = if legacy > 0 { format!("Opened. {legacy} stamped motif(s) from the old manual mode were converted to grown leaves.") } else { "Opened.".into() };
             }
             Err(e) => self.message = e,
+        }
+    }
+    /// File → New: choose the page size first, starting from the current one.
+    fn open_new_dialog(&mut self) {
+        let chip = self.workspace == Workspace::Chip;
+        let (width, height) = if chip { (self.chip.settings.width(), self.chip.settings.page_height()) } else { (self.layout.width, self.layout.height) };
+        self.new_dialog = Some(page_sizes::NewDialog { chip, width, height });
+    }
+    fn show_new_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut d) = self.new_dialog.take() else { return };
+        let t = self.t(); let mut inches = self.prefs.inches;
+        let choice = page_sizes::new_dialog(ctx, t, &mut d, &mut self.page_sizes, &mut inches);
+        if inches != self.prefs.inches { self.set_prefs(Prefs { inches, ..self.prefs }); }
+        match choice {
+            None => self.new_dialog = Some(d),
+            Some(page_sizes::NewChoice::Cancel) => {}
+            Some(page_sizes::NewChoice::Create(w, h)) => {
+                if d.chip { self.chip.new_pattern_sized(w, h); } else { self.new_size = Some((w, h)); self.ask(Pending::New); }
+            }
         }
     }
     /// Run an action that replaces the document, asking first if it has unsaved changes.
@@ -295,6 +321,14 @@ impl App {
     }
 }
 
+/// The layout on a page of a new size: backbones scale with the page.
+fn resized(layout: &Layout, w: f64, h: f64) -> Layout {
+    let mut next = layout.clone(); let (sx, sy) = (w / next.width, h / next.height);
+    for c in next.curves.iter_mut() { *c = c.map(|p| pt(p.x * sx, p.y * sy)); }
+    next.width = w; next.height = h; next.locked_parts.clear();
+    next
+}
+
 fn new_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -315,6 +349,7 @@ impl eframe::App for App {
         }
         self.shortcuts(ctx);
         self.run_pending(ctx);
+        self.show_new_dialog(ctx);
         if self.stale { self.regrow(); }
         let title = if self.workspace == Workspace::Chip { self.chip.title() } else { self.title() };
         if title != self.shown_title { ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone())); self.shown_title = title; }
@@ -345,7 +380,7 @@ impl App {
             if redo || redo2 { self.chip.redo(); }
             if save_as { self.chip.save(true); } else if save { self.chip.save(false); }
             if open { self.chip.open(); }
-            if new { self.chip.new_pattern(); }
+            if new { self.open_new_dialog(); }
             if typing { return; }
             let (del, esc) = ctx.input(|i| (i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace), i.key_pressed(Key::Escape)));
             if del { self.chip.remove_selected(); }
@@ -356,7 +391,7 @@ impl App {
         if redo || redo2 { self.redo(); }
         if save_as { self.save(true); } else if save { self.save(false); }
         if open { self.ask(Pending::Open); }
-        if new { self.ask(Pending::New); }
+        if new { self.open_new_dialog(); }
         if typing { return; }
         let (v, p, t, del, esc) = ctx.input(|i| (i.key_pressed(Key::V), i.key_pressed(Key::P), i.key_pressed(Key::T), i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace), i.key_pressed(Key::Escape)));
         if v { self.tool = Tool::Select; }
@@ -388,7 +423,7 @@ impl App {
                 ui.add_space(10.0);
                 if self.workspace == Workspace::Chip { self.chip_menus(ui); } else {
                 ui.menu_button("File", |ui| {
-                    if ui.add(egui::Button::new("New").shortcut_text("Ctrl+N")).clicked() { self.ask(Pending::New); ui.close_menu(); }
+                    if ui.add(egui::Button::new("New…").shortcut_text("Ctrl+N")).clicked() { self.open_new_dialog(); ui.close_menu(); }
                     if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() { ui.close_menu(); self.ask(Pending::Open); }
                     if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { ui.close_menu(); self.save(false); }
                     if ui.add(egui::Button::new("Save As…").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); self.save(true); }
@@ -595,13 +630,16 @@ impl App {
 
     /// Page size, carving surface and export options.
     fn page_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, self.t(), "Page");
-        let (mut w, mut h) = (self.layout.width, self.layout.height);
-        ui.horizontal(|ui| { ui.label("Width"); ui.add(egui::DragValue::new(&mut w).range(40.0..=1000.0).suffix(" mm")); ui.label("Height"); ui.add(egui::DragValue::new(&mut h).range(40.0..=1000.0).suffix(" mm")); });
-        if w != self.layout.width || h != self.layout.height {
-            let mut next = self.layout.clone(); let (sx, sy) = (w / next.width, h / next.height);
-            for c in next.curves.iter_mut() { *c = c.map(|p| pt(p.x * sx, p.y * sy)); }
-            next.width = w; next.height = h; next.locked_parts.clear(); self.commit(next); self.fitted = false; self.skel_thumbs = vec![None; Skeleton::ALL.len()];
+        let t = self.t();
+        section(ui, t, "Page");
+        let mut inches = self.prefs.inches;
+        let picked = page_sizes::size_editor(ui, t, &mut self.page_sizes, &mut inches, self.layout.width, self.layout.height, 40.0..=1000.0, false);
+        if inches != self.prefs.inches { self.set_prefs(Prefs { inches, ..self.prefs }); }
+        if let Some((w, h)) = picked {
+            if w != self.layout.width || h != self.layout.height {
+                let next = resized(&self.layout, w, h);
+                self.commit(next); self.fitted = false; self.skel_thumbs = vec![None; Skeleton::ALL.len()];
+            }
         }
         // the carving surface: growth stays inside it (a scroll vine fills it)
         let now = self.layout.surface.clone();

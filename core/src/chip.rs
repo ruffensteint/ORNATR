@@ -4,7 +4,8 @@
 use crate::geometry::{pt, Point};
 use crate::growth::Mulberry;
 use crate::outline::intersection;
-use crate::facets::{from_outline, square_border, BorderStyle, Centre, Chip};
+use crate::compose::{flow_fill, Motif};
+use crate::facets::{fill_region, from_outline, rect_border, BorderStyle, Centre, Chip, FillEdge, Repeat};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
@@ -33,17 +34,25 @@ pub struct ChipSettings {
     pub traditional: Option<bool>,
     /// The faceted engine (rosette plus border, with facet lines); None = the classic generator.
     pub faceted: Option<Faceted>,
+    /// Lasso fills: freehand regions filled with a square repeat, in drawing order.
+    pub fills: Vec<ChipFill>,
+    /// Page height in mm for a rectangular page (faceted engine only); None = square (`size` × `size`).
+    pub height: Option<f64>,
 }
 
 impl Default for ChipSettings {
     fn default() -> Self {
-        ChipSettings { family: ChipFamily::Star, count: 6, size: 100.0, removed: vec![], seed: Some(1248), grid: Some(5.0), edits: BTreeMap::new(), grammar: Some(2), border_seed: None, border_version: Some(1), traditional: Some(true), faceted: None }
+        ChipSettings { family: ChipFamily::Star, count: 6, size: 100.0, removed: vec![], seed: Some(1248), grid: Some(5.0), edits: BTreeMap::new(), grammar: Some(2), border_seed: None, border_version: Some(1), traditional: Some(true), faceted: None, fills: vec![], height: None }
     }
 }
 
 impl ChipSettings {
     pub fn seed(&self) -> u32 { self.seed.unwrap_or(1248) }
     pub fn step(&self) -> f64 { self.grid.unwrap_or(5.0) }
+    /// Page width in mm (`size`).
+    pub fn width(&self) -> f64 { self.size }
+    /// Page height in mm: `height` on a faceted page, else square (the classic generator is square).
+    pub fn page_height(&self) -> f64 { match (self.faceted, self.height) { (Some(_), Some(h)) => h, _ => self.size } }
     pub fn border_seed(&self) -> u32 { self.border_seed.unwrap_or(self.seed()) }
     /// Name of the current border rhythm.
     pub fn border_name(&self) -> &'static str {
@@ -55,6 +64,17 @@ impl ChipSettings {
     pub fn regenerated(&self) -> ChipSettings {
         ChipSettings { traditional: Some(true), grammar: Some(2), border_version: Some(1), grid: Some(self.step()), removed: vec![], edits: BTreeMap::new(), ..self.clone() }
     }
+    /// The pattern regenerated on a `w` × `h` page (square for the classic generator).
+    /// Fill outlines scale with the page, so they stay where they were drawn.
+    pub fn resized(&self, w: f64, h: f64) -> ChipSettings {
+        let h = if self.faceted.is_some() { h } else { w };
+        let (sx, sy) = (w / self.width(), h / self.page_height());
+        let mut n = self.regenerated();
+        n.size = w; n.height = if (h - w).abs() > 1e-9 { Some(h) } else { None };
+        n.grid = Some(self.step().min((w.min(h) / 6.0).floor()).max(2.0));
+        for f in n.fills.iter_mut() { for p in f.outline.iter_mut() { *p = pt(p.x * sx, p.y * sy); } }
+        n
+    }
     pub fn visible(&self) -> Vec<(usize, Vec<Point>)> {
         chip_regions(self).into_iter().enumerate().filter(|(i, _)| !self.removed.contains(i)).collect()
     }
@@ -62,9 +82,16 @@ impl ChipSettings {
 
 /// A faceted composition: a rosette centred on the page inside an optional square border.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Faceted { pub centre: Centre, pub count: u32, pub border: Option<BorderStyle> }
+pub struct Faceted { pub centre: Centre, pub count: u32, pub border: Option<BorderStyle>,
+    /// Centre size as a share of the room inside the border (0.4–1.0): smaller leaves space for fills.
+    pub scale: f64,
+    /// A field of this repeat fills the inside of the border instead of a rosette (box sides, strips),
+    /// cells stretched to fit it exactly; None = the rosette.
+    pub field: Option<Repeat> }
 
 impl Faceted {
+    pub const SCALES: std::ops::RangeInclusive<f64> = 0.4..=1.0;
+    pub fn new(centre: Centre, count: u32, border: Option<BorderStyle>) -> Faceted { Faceted { centre, count, border, scale: 1.0, field: None } }
     /// One seed picks the centre, its count and the border, so "Generate
     /// variation" walks through the permutations.
     pub fn from_seed(seed: u32) -> Faceted {
@@ -74,7 +101,7 @@ impl Faceted {
         let step = (rng.next() * 5.0) as i64 - 2;
         let count = (centre.default_count() as i64 + 2 * step).clamp(*centre.counts().start() as i64, *centre.counts().end() as i64) as u32;
         let border = [None, Some(BorderStyle::Zigzag), Some(BorderStyle::Arcade), Some(BorderStyle::Almond)][(rng.next() * 4.0) as usize % 4];
-        Faceted { centre, count, border }
+        Faceted::new(centre, count, border)
     }
 }
 
@@ -83,24 +110,113 @@ fn faceted_layout(size: f64) -> (f64, f64) { ((size * 0.13).max(8.0), size * 0.0
 
 /// The faceted chips as generated (no hand edits).
 fn faceted_base(s: &ChipSettings, f: &Faceted) -> Vec<Chip> {
-    let (band, margin) = faceted_layout(s.size);
-    let c = pt(s.size / 2.0, s.size / 2.0);
+    // on a rectangular page the border follows the page and the rosette fits its short side
+    let (w, h) = (s.width(), s.page_height()); let short = w.min(h);
+    let (band, margin) = faceted_layout(short);
+    let c = pt(w / 2.0, h / 2.0);
     let mut chips = vec![];
     let radius = match f.border {
-        Some(style) => { chips.extend(square_border(style, pt(margin, margin), s.size - 2.0 * margin, band)); s.size / 2.0 - margin - band - s.size * 0.04 }
-        None => s.size / 2.0 - margin,
+        Some(style) => { chips.extend(rect_border(style, pt(margin, margin), w - 2.0 * margin, h - 2.0 * margin, band)); short / 2.0 - margin - band - short * 0.04 }
+        None => short / 2.0 - margin,
     };
-    let mut all = f.centre.build(c, radius, f.count).chips;
+    let mut all = match f.field {
+        // a field of the repeat inside the border: whole cells, stretched to fit it exactly
+        Some(kind) => {
+            let inset = if f.border.is_some() { margin + band + 1.5 } else { margin };
+            let (iw, ih) = (w - 2.0 * inset, h - 2.0 * inset);
+            let target = 40.0 * f.scale.clamp(0.4, 1.0);
+            let rows = ((ih / target).round() as usize).max(1);
+            let cols = ((iw / (ih / rows as f64)).round() as usize).max(1);
+            let (cw, chh) = (iw / cols as f64, ih / rows as f64);
+            let unit = crate::facets::repeat_unit(kind, 0.5);
+            let mut field = vec![];
+            for j in 0..rows { for i in 0..cols {
+                let map = |u: f64, v: f64| pt(inset + (i as f64 + u) * cw, inset + (j as f64 + v) * chh);
+                field.extend(crate::facets::warp_unit(&unit, 0.5, 1, &map));
+            } }
+            field
+        }
+        None => f.centre.build(c, radius * f.scale.clamp(0.4, 1.0), f.count).chips,
+    };
     all.extend(chips);
     all
+}
+
+/// How a fill lays out its repeat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillLayout {
+    /// A square grid anchored to the page (the first fill layout).
+    Grid,
+    /// Follows the composition: a band round the enclosed motif, fans in the pockets.
+    Flow,
+}
+
+/// A fill: a drawn region (page mm) filled with a square repeat.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChipFill { pub outline: Vec<Point>, pub pattern: Repeat, pub cell: f64, pub margin: f64, pub edge: FillEdge, pub layout: FillLayout,
+    /// Flow layout: a sawtooth row hugging the motif.
+    pub edge_row: bool }
+
+impl ChipFill {
+    pub const CELLS: std::ops::RangeInclusive<f64> = 6.0..=60.0;
+    pub const MARGINS: std::ops::RangeInclusive<f64> = 0.0..=6.0;
+    pub fn new(outline: Vec<Point>, pattern: Repeat, cell: f64) -> ChipFill { ChipFill { outline, pattern, cell, margin: 1.5, edge: FillEdge::Clip, layout: FillLayout::Flow, edge_row: true } }
+}
+
+/// The motif a flow fill wraps round: the largest existing motif lying wholly inside
+/// the fill's outline (its chips closed together, as the fill sees them), with its
+/// centre, outer radius and number of points (the rosette's own count when it's the
+/// page's centre motif; otherwise 8).
+fn enclosed_motif(s: &ChipSettings, chips: &[Chip], outline: &[Point]) -> Option<Motif> {
+    use crate::booleans::{close, signed_area, union};
+    if chips.is_empty() { return None; }
+    let merged = close(&union(&chips.iter().map(|c| c.outline.as_slice()).collect::<Vec<_>>()), 5.0);
+    // a ring (a border) has a hole and is never the centre motif
+    let best = merged.iter().filter(|sh| sh.len() == 1).map(|sh| &sh[0])
+        .filter(|ring| ring.iter().all(|p| crate::outline::inside(*p, outline)))
+        .max_by(|a, b| signed_area(a).abs().total_cmp(&signed_area(b).abs()))?;
+    let centre = crate::facets::centroid(best);
+    let radius = best.iter().map(|p| crate::geometry::distance(*p, centre)).fold(0.0, f64::max);
+    let page_centre = pt(s.width() / 2.0, s.page_height() / 2.0);
+    let points = match s.faceted { Some(f) if crate::geometry::distance(centre, page_centre) < s.width().min(s.page_height()) * 0.02 => f.count as usize, _ => 8 };
+    Some(Motif { centre, radius, points })
+}
+
+/// True when the chips come from the faceted model (faceted engine, or any fill).
+fn uses_facets(s: &ChipSettings) -> bool { s.faceted.is_some() || !s.fills.is_empty() }
+
+/// Every chip as generated, no hand edits: the engine's chips, then each fill
+/// in order, each avoiding everything before it. Removing a chip doesn't
+/// change the fills, so chip numbers stay put.
+pub fn generated_chips(s: &ChipSettings) -> Vec<Chip> { generated_with_starts(s).0 }
+
+/// `generated_chips`, plus the index of each fill's first chip.
+pub fn generated_with_starts(s: &ChipSettings) -> (Vec<Chip>, Vec<usize>) {
+    let mut chips: Vec<Chip> = match s.faceted { Some(f) => faceted_base(s, &f), None => classic_raw(s).iter().map(|p| from_outline(p)).collect() };
+    let mut starts = vec![];
+    for fill in &s.fills {
+        starts.push(chips.len());
+        let avoid: Vec<&[Point]> = chips.iter().map(|c| c.outline.as_slice()).collect();
+        let new = match fill.layout {
+            FillLayout::Grid => fill_region(fill.pattern, fill.cell, &fill.outline, fill.margin, fill.edge, &avoid),
+            FillLayout::Flow => flow_fill(fill.pattern, fill.cell, &fill.outline, fill.margin, fill.edge_row, &avoid, enclosed_motif(s, &chips, &fill.outline)),
+        };
+        chips.extend(new);
+    }
+    (chips, starts)
 }
 
 /// Every chip with its facets, hand edits applied. A chip that was only moved
 /// keeps its own facets; a reshaped one is cut to its centroid. Classic chips
 /// are read from their outlines.
 pub fn chip_facets(s: &ChipSettings) -> Vec<Chip> {
-    let Some(f) = s.faceted else { return chip_regions(s).iter().map(|p| from_outline(p)).collect() };
-    faceted_base(s, &f).into_iter().enumerate().map(|(i, chip)| match s.edits.get(&i) {
+    if !uses_facets(s) { return chip_regions(s).iter().map(|p| from_outline(p)).collect(); }
+    apply_edits(s, generated_chips(s))
+}
+
+/// Hand edits applied to generated chips (see `chip_facets`).
+pub fn apply_edits(s: &ChipSettings, generated: Vec<Chip>) -> Vec<Chip> {
+    generated.into_iter().enumerate().map(|(i, chip)| match s.edits.get(&i) {
         None => chip,
         Some(e) if e.len() == chip.outline.len() => {
             let d = pt(e[0].x - chip.outline[0].x, e[0].y - chip.outline[0].y);
@@ -132,8 +248,14 @@ pub fn valid_chip(points: &[Point]) -> bool {
 }
 
 pub fn chip_regions(s: &ChipSettings) -> Vec<Vec<Point>> {
-    if let Some(f) = s.faceted { return faceted_base(s, &f).into_iter().enumerate().map(|(i, c)| s.edits.get(&i).cloned().unwrap_or(c.outline)).collect(); }
+    if uses_facets(s) { return generated_chips(s).into_iter().enumerate().map(|(i, c)| s.edits.get(&i).cloned().unwrap_or(c.outline)).collect(); }
     if s.grid.is_some() { return grid_regions(s).into_iter().enumerate().map(|(i, p)| s.edits.get(&i).cloned().unwrap_or(p)).collect(); }
+    classic_raw(s)
+}
+
+/// The classic generator's outlines, before hand edits.
+fn classic_raw(s: &ChipSettings) -> Vec<Vec<Point>> {
+    if s.grid.is_some() { return grid_regions(s); }
     let (r, c) = (s.size * 0.42, s.size / 2.0);
     let count = s.count as f64;
     if s.family == ChipFamily::Border {
@@ -347,14 +469,19 @@ fn point_text(p: &Point) -> String { format!("{} {}", fixed3(p.x), fixed3(p.y)) 
 
 /// The pattern at actual size: retained chip outlines only, no grid.
 pub fn chip_svg(s: &ChipSettings) -> String {
-    if let Some(f) = s.faceted {
-        // outlines, then the thinner facet lines a carver follows down to the floor
+    let name = if uses_facets(s) { s.faceted.map_or(s.family.key(), |f| f.centre.key()) } else { s.family.key() };
+    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}mm\" height=\"{1}mm\" viewBox=\"0 0 {0} {1}\"><title>Chip carving {2}</title>{3}</svg>", s.size, s.page_height(), name, chip_drawing(s))
+}
+
+/// The pattern's drawing as an SVG group in page mm: the retained outlines, and on the
+/// faceted model the thinner facet lines a carver follows down to the floor.
+pub fn chip_drawing(s: &ChipSettings) -> String {
+    if uses_facets(s) {
         let chips: Vec<Chip> = chip_facets(s).into_iter().enumerate().filter(|(i, _)| !s.removed.contains(i)).map(|(_, c)| c).collect();
         let outlines: String = chips.iter().map(|c| format!("<path d=\"M {} Z\"/>", c.outline.iter().map(point_text).collect::<Vec<_>>().join(" L "))).collect();
         let facets: String = chips.iter().flat_map(|c| c.facet_lines()).map(|l| format!("<path d=\"M {}\"/>", l.iter().map(point_text).collect::<Vec<_>>().join(" L "))).collect();
-        return format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}mm\" height=\"{0}mm\" viewBox=\"0 0 {0} {0}\"><title>Chip carving {1}</title><g fill=\"none\" stroke=\"#000\" stroke-linejoin=\"round\" stroke-linecap=\"round\"><g stroke-width=\"0.25\">{2}</g><g stroke-width=\"0.15\">{3}</g></g></svg>", s.size, f.centre.key(), outlines, facets);
+        return format!("<g fill=\"none\" stroke=\"#000\" stroke-linejoin=\"round\" stroke-linecap=\"round\"><g stroke-width=\"0.25\">{outlines}</g><g stroke-width=\"0.15\">{facets}</g></g>");
     }
-    let fam = s.family.key();
     let paths: String = s.visible().iter().map(|(_, p)| format!("<path d=\"M {} Z\"/>", p.iter().map(point_text).collect::<Vec<_>>().join(" L "))).collect();
-    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}mm\" height=\"{0}mm\" viewBox=\"0 0 {0} {0}\"><title>Chip carving {1}</title><g fill=\"none\" stroke=\"#000\" stroke-width=\"0.25\" stroke-linejoin=\"round\">{2}</g></svg>", s.size, fam, paths)
+    format!("<g fill=\"none\" stroke=\"#000\" stroke-width=\"0.25\" stroke-linejoin=\"round\">{paths}</g>")
 }

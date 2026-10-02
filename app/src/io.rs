@@ -115,8 +115,8 @@ pub fn save(l: &Layout) -> String {
 }
 
 // ---------- chip layouts ----------
-use scroll_core::chip::{ChipFamily, ChipSettings, Faceted};
-use scroll_core::facets::{BorderStyle, Centre};
+use scroll_core::chip::{ChipFamily, ChipFill, ChipSettings, Faceted, FillLayout};
+use scroll_core::facets::{BorderStyle, Centre, FillEdge, Repeat};
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
@@ -134,7 +134,22 @@ pub struct ChipFile {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_centre: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_count: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_border: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_scale: Option<f64>,
+    /// A repeat key: a field of it fills the inside of the border instead of a rosette (absent: rosette).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub facet_field: Option<String>,
+    /// Page height in mm for a rectangular faceted page (absent: square).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub height: Option<f64>,
+    /// Lasso fills: freehand regions filled with a square repeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub fills: Option<Vec<FillFile>>,
 }
+
+/// A fill as saved: outline in page mm, repeat key, cell size, margin, edge ("clip" or "whole"),
+/// and (optional) layout ("flow"; absent = the original grid) with its edge row.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillFile { pub outline: Vec<P>, pub pattern: String, pub cell: f64, pub margin: f64, pub edge: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub edge_row: Option<bool> }
 
 fn whole(v: f64, lo: f64, hi: f64) -> bool { v.is_finite() && v.fract() == 0.0 && v >= lo && v <= hi }
 
@@ -143,14 +158,14 @@ pub fn parse_chip(text: &str) -> Result<ChipSettings, String> {
     let f: ChipFile = serde_json::from_str(text).map_err(|_| "Not a chip layout.".to_string())?;
     let bad = |m: &str| Err(m.to_string());
     let Some(family) = ChipFamily::from_key(&f.family) else { return bad("Unsupported chip pattern.") };
-    if !whole(f.count, 4.0, 16.0) || !(f.size.is_finite() && (40.0..=300.0).contains(&f.size)) || f.removed.len() > 10000 || !f.removed.iter().all(|n| whole(*n, 0.0, 9999.0)) { return bad("Unsupported chip pattern."); }
+    if !whole(f.count, 4.0, 16.0) || !(f.size.is_finite() && (40.0..=600.0).contains(&f.size)) || f.height.is_some_and(|h| !(h.is_finite() && (40.0..=600.0).contains(&h))) || f.removed.len() > 10000 || !f.removed.iter().all(|n| whole(*n, 0.0, 9999.0)) { return bad("Unsupported chip pattern."); }
     if f.seed.is_some_and(|s| !whole(s, 0.0, 4294967295.0)) || f.border_seed.is_some_and(|s| !whole(s, 0.0, 4294967295.0)) { return bad("Invalid chip seed."); }
     if f.border_version.is_some_and(|v| v != 1.0) || f.grammar.is_some_and(|v| v != 2.0) { return bad("Unsupported chip composition."); }
     if f.grid.is_some_and(|g| !(g.is_finite() && g >= 2.0 && g <= 30f64.min(f.size / 6.0))) { return bad("Invalid grid interval."); }
     let mut edits = BTreeMap::new();
     for (k, v) in f.edits.unwrap_or_default() {
         let Ok(i) = k.parse::<usize>() else { return bad("Invalid chip edits.") };
-        if i >= 10000 || v.len() < 3 || v.len() > 200 || !v.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.x >= 0.0 && p.y >= 0.0 && p.x <= f.size && p.y <= f.size) { return bad("Invalid chip corner."); }
+        if i >= 10000 || v.len() < 3 || v.len() > 200 || !v.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.x >= 0.0 && p.y >= 0.0 && p.x <= f.size && p.y <= f.height.unwrap_or(f.size).max(f.size)) { return bad("Invalid chip corner."); }
         edits.insert(i, v.iter().map(|p| pt(p.x, p.y)).collect());
     }
     let faceted = match &f.facet_centre {
@@ -160,11 +175,24 @@ pub fn parse_chip(text: &str) -> Result<ChipSettings, String> {
             let count = f.facet_count.unwrap_or(centre.default_count() as f64);
             if !whole(count, *centre.counts().start() as f64, *centre.counts().end() as f64) { return bad("Unsupported chip pattern."); }
             let border = match f.facet_border.as_deref() { None | Some("none") => None, Some(b) => match BorderStyle::from_key(b) { Some(b) => Some(b), None => return bad("Unsupported chip border.") } };
-            Some(Faceted { centre, count: count as u32, border })
+            let scale = f.facet_scale.unwrap_or(1.0);
+            if !(scale.is_finite() && Faceted::SCALES.contains(&scale)) { return bad("Invalid centre size."); }
+            let field = match f.facet_field.as_deref() { None => None, Some(k) => match Repeat::from_key(k) { Some(r) => Some(r), None => return bad("Unsupported chip pattern.") } };
+            Some(Faceted { centre, count: count as u32, border, scale, field })
         }
     };
+    let mut fills = vec![];
+    for x in f.fills.unwrap_or_default() {
+        let Some(pattern) = Repeat::from_key(&x.pattern) else { return bad("Unsupported chip fill.") };
+        let edge = match x.edge.as_str() { "clip" => FillEdge::Clip, "whole" => FillEdge::Whole, _ => return bad("Unsupported chip fill.") };
+        let finite = |v: f64| v.is_finite();
+        if x.outline.len() < 3 || x.outline.len() > 5000 || !x.outline.iter().all(|p| finite(p.x) && finite(p.y) && p.x.abs() < 10000.0 && p.y.abs() < 10000.0)
+            || !(finite(x.cell) && ChipFill::CELLS.contains(&x.cell)) || !(finite(x.margin) && ChipFill::MARGINS.contains(&x.margin)) { return bad("Invalid chip fill."); }
+        let layout = match x.layout.as_deref() { None | Some("grid") => FillLayout::Grid, Some("flow") => FillLayout::Flow, _ => return bad("Unsupported chip fill.") };
+        fills.push(ChipFill { outline: x.outline.iter().map(|p| pt(p.x, p.y)).collect(), pattern, cell: x.cell, margin: x.margin, edge, layout, edge_row: x.edge_row.unwrap_or(true) });
+    }
     Ok(ChipSettings { family, count: f.count as u32, size: f.size, removed: f.removed.iter().map(|n| *n as usize).collect(), seed: f.seed.map(|s| s as u32), grid: f.grid, edits,
-        grammar: f.grammar.map(|v| v as u8), border_seed: f.border_seed.map(|s| s as u32), border_version: f.border_version.map(|v| v as u8), traditional: f.traditional, faceted })
+        grammar: f.grammar.map(|v| v as u8), border_seed: f.border_seed.map(|s| s as u32), border_version: f.border_version.map(|v| v as u8), traditional: f.traditional, faceted, fills, height: f.height })
 }
 
 pub fn save_chip(s: &ChipSettings) -> String {
@@ -172,6 +200,38 @@ pub fn save_chip(s: &ChipSettings) -> String {
         edits: if s.edits.is_empty() { None } else { Some(s.edits.iter().map(|(k, v)| (k.to_string(), v.iter().map(|p| P { x: p.x, y: p.y }).collect())).collect()) },
         grammar: s.grammar.map(|v| v as f64), border_seed: s.border_seed.map(|v| v as f64), border_version: s.border_version.map(|v| v as f64), traditional: s.traditional,
         facet_centre: s.faceted.map(|f| f.centre.key().into()), facet_count: s.faceted.map(|f| f.count as f64),
-        facet_border: s.faceted.map(|f| f.border.map_or("none", |b| b.key()).into()) };
+        facet_border: s.faceted.map(|f| f.border.map_or("none", |b| b.key()).into()),
+        facet_scale: s.faceted.and_then(|f| (f.scale != 1.0).then_some(f.scale)),
+        facet_field: s.faceted.and_then(|f| f.field.map(|r| r.key().into())),
+        height: s.height,
+        fills: if s.fills.is_empty() { None } else { Some(s.fills.iter().map(|x| FillFile { outline: x.outline.iter().map(|p| P { x: p.x, y: p.y }).collect(), pattern: x.pattern.key().into(), cell: x.cell, margin: x.margin, edge: if x.edge == FillEdge::Clip { "clip" } else { "whole" }.into(),
+            layout: (x.layout == FillLayout::Flow).then(|| "flow".into()), edge_row: (x.layout == FillLayout::Flow).then_some(x.edge_row) }).collect()) } };
     serde_json::to_string_pretty(&f).unwrap()
+}
+
+// ---------- boxes ----------
+use scroll_core::boxes::{BoxDesign, Face, DIMENSIONS};
+
+/// A box: its outer dimensions, and each carved face as a chip layout. A missing back or
+/// right side follows the front or left side; a missing bottom isn't carved.
+pub fn save_box(b: &BoxDesign) -> String {
+    let mut root = serde_json::Map::new();
+    root.insert("box".into(), serde_json::json!({ "length": b.length, "width": b.width, "height": b.height }));
+    let mut put = |face: Face, s: Option<&ChipSettings>| { if let Some(s) = s { root.insert(face.key().into(), serde_json::from_str(&save_chip(s)).unwrap()); } };
+    put(Face::Lid, Some(&b.lid)); put(Face::Front, Some(&b.front)); put(Face::Left, Some(&b.left));
+    put(Face::Back, b.back.as_ref()); put(Face::Right, b.right.as_ref()); put(Face::Bottom, b.bottom.as_ref());
+    serde_json::to_string_pretty(&serde_json::Value::Object(root)).unwrap()
+}
+
+/// A box saved by `save_box`; Err for anything else (including a single chip layout).
+pub fn parse_box(text: &str) -> Result<BoxDesign, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|_| "Not a box.".to_string())?;
+    let dims = v.get("box").ok_or_else(|| "Not a box.".to_string())?;
+    let dim = |k: &str| dims.get(k).and_then(|x| x.as_f64()).filter(|x| x.is_finite() && DIMENSIONS.contains(x)).ok_or_else(|| "Invalid box size.".to_string());
+    let (length, width, height) = (dim("length")?, dim("width")?, dim("height")?);
+    let panel = |face: Face| -> Result<Option<ChipSettings>, String> {
+        match v.get(face.key()) { None => Ok(None), Some(p) => parse_chip(&p.to_string()).map(Some).map_err(|e| format!("{}: {e}", face.label())) }
+    };
+    let need = |face: Face| -> Result<ChipSettings, String> { panel(face)?.ok_or_else(|| format!("The box has no {}.", face.label().to_lowercase())) };
+    Ok(BoxDesign { length, width, height, lid: need(Face::Lid)?, front: need(Face::Front)?, left: need(Face::Left)?, back: panel(Face::Back)?, right: panel(Face::Right)?, bottom: panel(Face::Bottom)? })
 }

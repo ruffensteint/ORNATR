@@ -82,7 +82,7 @@ fn seg_distance(p: Point, a: Point, b: Point) -> f64 {
     let t = if l2 < 1e-12 { 0.0 } else { (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0) };
     distance(p, pt(a.x + dx * t, a.y + dy * t))
 }
-fn centroid(poly: &[Point]) -> Point {
+pub fn centroid(poly: &[Point]) -> Point {
     let n = poly.len(); let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
     for i in 0..n { let (p, q) = (poly[i], poly[(i + 1) % n]); let c = p.x * q.y - q.x * p.y; a += c; cx += (p.x + q.x) * c; cy += (p.y + q.y) * c; }
     if a.abs() < 1e-12 { return poly[0]; }
@@ -294,12 +294,31 @@ impl BorderStyle {
 /// A square border band of width `w` inside the square at `o` with side `size`.
 /// Each side is a whole number of repeats (the pitch stretches to fit), and
 /// the corners are square blocks with their own construction.
-pub fn square_border(style: BorderStyle, o: Point, size: f64, w: f64) -> Vec<Chip> {
-    let run = size - 2.0 * w;
+pub fn square_border(style: BorderStyle, o: Point, size: f64, w: f64) -> Vec<Chip> { rect_border(style, o, size, size, w) }
+
+/// A rectangular border band of width `w` inside the rectangle at `o` (`width` × `height`):
+/// each side a whole number of repeats, with a corner block at each corner. On a
+/// square it is exactly `square_border`.
+pub fn rect_border(style: BorderStyle, o: Point, width: f64, height: f64, w: f64) -> Vec<Chip> {
+    let (top, sides) = (border_side(style, width - 2.0 * w, w), border_side(style, height - 2.0 * w, w));
+    // each side is built in its own frame (x along the side from the corner block, y inward
+    // from the outer edge) and placed: top, right, bottom, left, turning clockwise
+    let place = |chips: &[Chip], f: &dyn Fn(Point) -> Point| -> Vec<Chip> { chips.iter().map(|ch| Chip { outline: ch.outline.iter().map(|p| f(*p)).collect(), floor: ch.floor.iter().map(|p| f(*p)).collect(), corners: ch.corners.clone() }).collect() };
+    let mut out = place(&top, &|p| pt(o.x + w + p.x, o.y + p.y));
+    out.extend(place(&sides, &|p| pt(o.x + width - p.y, o.y + w + p.x)));
+    out.extend(place(&top, &|p| pt(o.x + width - w - p.x, o.y + height - p.y)));
+    out.extend(place(&sides, &|p| pt(o.x + p.y, o.y + height - w - p.x)));
+    out
+}
+
+/// One side of a border in its own frame: x runs along the side from 0 to `run`, y
+/// inward from the outer edge (0) to the band width `w`; the corner block before the
+/// side sits at x in [-w, 0].
+fn border_side(style: BorderStyle, run: f64, w: f64) -> Vec<Chip> {
     let n = ((run / (style.pitch() * w)).round() as usize).max(1);
     let p = run / n as f64;
-    let c = pt(o.x + size / 2.0, o.y + size / 2.0);
-    let (y0, y1) = (o.y, o.y + w); // outer and inner edge of the top side
+    let o = pt(-w, 0.0);
+    let (y0, y1) = (o.y, o.y + w); // outer and inner edge of the side
     let mut side: Vec<Chip> = vec![];
     match style {
         BorderStyle::Zigzag => {
@@ -345,7 +364,162 @@ pub fn square_border(style: BorderStyle, o: Point, size: f64, w: f64) -> Vec<Chi
             side.push(lens(pt(o.x + 0.14 * w, o.y + 0.14 * w), pt(o.x + 0.86 * w, o.y + 0.86 * w), 0.2 * w));
         }
     }
-    (0..4).flat_map(|k| side.iter().map(move |ch| ch.turned(c, k)).collect::<Vec<_>>()).collect()
+    side
+}
+
+// ---------------------------------------------------------------- square repeats
+
+/// Square repeat fields built on one lattice. Each cell of side `a` splits into
+/// eight octant triangles, node N (a cell corner), edge midpoint M and cell
+/// centre C; a pattern is what is cut in one octant, repeated by the square's
+/// symmetries, so neighbouring cells meet at exactly the same points.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Repeat { NodeStars, Pinwheel, StarsAndDiamonds, Sunbursts }
+
+impl Repeat {
+    pub const ALL: [Repeat; 4] = [Repeat::NodeStars, Repeat::Pinwheel, Repeat::StarsAndDiamonds, Repeat::Sunbursts];
+    pub fn key(self) -> &'static str { match self { Repeat::NodeStars => "node-stars", Repeat::Pinwheel => "pinwheel", Repeat::StarsAndDiamonds => "stars-diamonds", Repeat::Sunbursts => "sunbursts" } }
+    pub fn from_key(k: &str) -> Option<Repeat> { Repeat::ALL.into_iter().find(|r| r.key() == k) }
+    pub fn label(self) -> &'static str {
+        match self { Repeat::NodeStars => "Node stars", Repeat::Pinwheel => "Pinwheel", Repeat::StarsAndDiamonds => "Stars and diamonds", Repeat::Sunbursts => "Sunbursts" }
+    }
+    pub fn note(self) -> &'static str {
+        match self {
+            Repeat::NodeStars => "8-point star on every node; points meet tip to tip",
+            Repeat::Pinwheel => "each cell turns one way; chips meet off-centre on the edges",
+            Repeat::StarsAndDiamonds => "4-point stars on nodes and on cell centres, alternating",
+            Repeat::Sunbursts => "alternate rays fanned from every node",
+        }
+    }
+    /// Chips in one octant, in cell coordinates: centre C at (0,0), node N at
+    /// (-h,-h), edge midpoint M at (0,-h).
+    fn octant(self, h: f64) -> Vec<Chip> {
+        let (n, m, c) = (pt(-h, -h), pt(0.0, -h), pt(0.0, 0.0));
+        match self {
+            Repeat::NodeStars => {
+                // shoulder between the edge point and the diagonal point; M-S-C stays uncut
+                let s = polar(n, h * 0.62, PI / 4.0 - PI / 8.0);
+                vec![tri(n, m, s), tri(n, s, c)]
+            }
+            Repeat::StarsAndDiamonds => {
+                // node star shoulder and centre star shoulder on the diagonal, uncut between
+                let (sn, sc) = (lerp(n, c, 0.3), lerp(c, n, 0.3));
+                vec![tri(n, m, sn), tri(c, sc, m)]
+            }
+            Repeat::Sunbursts => {
+                // the octant's far side M→C split in three; the first and last rays are cut
+                let p = |t: f64| lerp(m, c, t);
+                vec![tri(n, p(0.0), p(1.0 / 3.0)), tri(n, p(2.0 / 3.0), p(1.0))]
+            }
+            Repeat::Pinwheel => vec![], // rotational, built per cell below
+        }
+    }
+}
+
+/// A square field of `cells` × `cells` repeats filling the square at `o` with side `size`.
+pub fn square_repeat(kind: Repeat, o: Point, size: f64, cells: usize) -> Vec<Chip> { repeat_field(kind, o, size / cells as f64, cells, cells) }
+
+/// `nx` × `ny` cells of side `a` from the corner `o`.
+pub fn repeat_field(kind: Repeat, o: Point, a: f64, nx: usize, ny: usize) -> Vec<Chip> {
+    let unit = repeat_unit(kind, a / 2.0);
+    let mut out = vec![];
+    for i in 0..nx { for j in 0..ny {
+        let cc = pt(o.x + (i as f64 + 0.5) * a, o.y + (j as f64 + 0.5) * a);
+        for ch in &unit {
+            let f = |p: &Point| pt(p.x + cc.x, p.y + cc.y);
+            out.push(Chip { outline: ch.outline.iter().map(f).collect(), floor: ch.floor.iter().map(f).collect(), corners: ch.corners.clone() });
+        }
+    } }
+    out
+}
+
+/// One cell of a repeat: its chips in cell coordinates, centre (0,0), side 2h.
+pub fn repeat_unit(kind: Repeat, h: f64) -> Vec<Chip> {
+    if kind == Repeat::Pinwheel {
+        // one triangle per cell edge, C to the edge; the cut chip runs from the edge's
+        // start to a point 60% along it, so each cell turns the same way
+        let (a0, b0, c) = (pt(-h, -h), pt(h, -h), pt(0.0, 0.0));
+        let x = lerp(a0, b0, 0.6);
+        let chip = Chip { outline: vec![a0, x, c], floor: vec![pt((a0.x + x.x + c.x) / 3.0, (a0.y + x.y + c.y) / 3.0)], corners: vec![0, 1, 2] };
+        (0..4).map(|k| chip.turned(c, k)).collect()
+    } else {
+        let base = kind.octant(h);
+        // mirrored across the N–C diagonal: the octant's twin on the other side of it
+        let mirror = |ch: &Chip| { let f = |p: &Point| pt(p.y, p.x); Chip { outline: ch.outline.iter().map(f).collect(), floor: ch.floor.iter().map(f).collect(), corners: ch.corners.clone() } };
+        let pair: Vec<Chip> = base.iter().cloned().chain(base.iter().map(mirror)).collect();
+        (0..4).flat_map(|k| pair.iter().map(move |ch| ch.turned(pt(0.0, 0.0), k)).collect::<Vec<_>>()).collect()
+    }
+}
+
+/// A repeat cell bent onto a curved patch: `map` takes (u, v) in [0,1]² (u across
+/// the cell, v down it) to the page. Each straight edge is split into `k` pieces so
+/// it follows the bend; neighbouring cells share their edges exactly.
+pub fn warp_unit(unit: &[Chip], h: f64, k: usize, map: &dyn Fn(f64, f64) -> Point) -> Vec<Chip> {
+    let to = |p: Point| map((p.x + h) / (2.0 * h), (p.y + h) / (2.0 * h));
+    unit.iter().map(|ch| {
+        let n = ch.outline.len();
+        let mut outline = vec![];
+        for i in 0..n { let (a, b) = (ch.outline[i], ch.outline[(i + 1) % n]); for j in 0..k { outline.push(to(lerp(a, b, j as f64 / k as f64))); } }
+        Chip { outline, floor: ch.floor.iter().map(|p| to(*p)).collect(), corners: ch.corners.iter().map(|i| i * k).collect() }
+    }).collect()
+}
+
+/// How a fill treats chips that cross its edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FillEdge { Clip, Whole }
+
+/// Fill a freehand region with a repeat. The lattice is anchored to the page
+/// origin, so fills with the same cell size line up. The region is inset by
+/// `margin` and keeps `margin` of uncut wood around every chip in `avoid`.
+/// Clip: chips are cut to that shape (slivers dropped; a clipped chip keeps its
+/// deep point when it's still inside). Whole: only complete chips are kept.
+pub fn fill_region(kind: Repeat, cell: f64, lasso: &[Point], margin: f64, edge: FillEdge, avoid: &[&[Point]]) -> Vec<Chip> {
+    if lasso.len() < 3 || cell <= 0.0 { return vec![]; }
+    let allowed = fill_allowed(lasso, margin, avoid);
+    let pts: Vec<Point> = allowed.iter().flatten().flatten().copied().collect();
+    if pts.is_empty() { return vec![]; }
+    let b = crate::geometry::Bounds::of(&pts);
+    let (i0, j0) = ((b.l / cell).floor(), (b.t / cell).floor());
+    let (nx, ny) = (((b.r / cell).ceil() - i0) as usize, ((b.b / cell).ceil() - j0) as usize);
+    repeat_field(kind, pt(i0 * cell, j0 * cell), cell, nx, ny).into_iter().flat_map(|chip| clip_chip(chip, &allowed, edge)).collect()
+}
+
+/// Where a fill may cut: the outline inset by `margin`, minus every chip in `avoid`
+/// grown by `margin`. An existing motif is avoided as a whole: gaps of up to 10 mm
+/// between its chips are closed first, so a fill can't seep into the uncut wood inside a rosette.
+pub fn fill_allowed(lasso: &[Point], margin: f64, avoid: &[&[Point]]) -> crate::booleans::Shapes {
+    use crate::booleans::{clean_with, difference, offset, union};
+    const GAP: f64 = 5.0;
+    let region = offset(&clean_with(lasso, false), -margin);
+    if region.is_empty() || avoid.is_empty() { return region; }
+    difference(&region, &offset(&crate::booleans::close(&union(avoid), GAP), margin))
+}
+
+/// A chip fitted to `allowed`: kept as it is when it lies inside; otherwise dropped
+/// (Whole) or cut to it (Clip), keeping only substantial pieces (most of the chip, and
+/// not a thin shard) so an edge doesn't fill with fragments. A clipped piece keeps its
+/// deep point when that's still inside.
+pub fn clip_chip(chip: Chip, allowed: &crate::booleans::Shapes, edge: FillEdge) -> Vec<Chip> {
+    use crate::booleans::{area, intersect, signed_area};
+    let full = signed_area(&chip.outline).abs();
+    let pts: Vec<Point> = allowed.iter().flatten().flatten().copied().collect();
+    if pts.is_empty() { return vec![]; }
+    let (b, cb) = (crate::geometry::Bounds::of(&pts), crate::geometry::Bounds::of(&chip.outline));
+    if !(cb.l < b.r && cb.r > b.l && cb.t < b.b && cb.b > b.t) { return vec![]; }
+    let kept = intersect(&vec![vec![chip.outline.clone()]], allowed);
+    if area(&kept) >= full * 0.999 { return vec![chip]; }
+    if edge == FillEdge::Whole { return vec![]; }
+    let mut out = vec![];
+    // a piece with a hole would wrap round something it must avoid: drop it
+    for piece in kept.iter().filter(|s| s.len() == 1).map(|s| &s[0]) {
+        let a = signed_area(piece).abs();
+        let perimeter: f64 = (0..piece.len()).map(|k| distance(piece[k], piece[(k + 1) % piece.len()])).sum();
+        if a < (full * 0.45).max(1.5) || 2.0 * a / perimeter < 0.8 { continue; }
+        let mut c = from_outline(piece);
+        if chip.floor.len() == 1 && crate::outline::inside(chip.floor[0], piece) { c.floor = chip.floor.clone(); }
+        out.push(c);
+    }
+    out
 }
 
 // ---------------------------------------------------------------- drawing
