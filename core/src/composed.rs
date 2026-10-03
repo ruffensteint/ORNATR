@@ -72,7 +72,7 @@ pub fn composed_growth(page: &Page, s: &GrowthSettings) -> GrowthResult {
             let leaf_sides = if open { vec![c.side] } else { vec![-c.side, c.side] };
             for leaf_side in leaf_sides {
                 let len_c = line_length(&c.points);
-                let o = ContourOptions { lobed: s.leaves > 0, root_width: root_flare(&main.polygon, c.root, len_c * (1.0 - PHI) * PHI), stalk: shoot_stalk(), ..ContourOptions::default() };
+                let o = ContourOptions { lobed: s.leaves > 0, root_width: root_flare(&main.polygon, c.root, len_c * (1.0 - PHI) * PHI), stalk: shoot_stalk(), eyes: s.eyes.unwrap_or(0), ..ContourOptions::default() };
                 let a = acanthus_contour(&c.points, 1.5, leaf_side, len_c * (1.0 - PHI) * (if open { 1.0 } else { PHI }) * (0.95 - (c.bend.abs() * 0.2).min(0.2)), &o);
                 if !page.fits(&a.polygon, 1.0, s.free == Some(true)) { continue; }
                 let collar = 4f64.max(c.size * if family == Family::Spiral { 0.25 } else { 0.65 });
@@ -84,7 +84,7 @@ pub fn composed_growth(page: &Page, s: &GrowthSettings) -> GrowthResult {
                     let mut i = 0; while i < other.polygon.len() { let p = other.polygon[i]; if distance(p, c.root) > r && inside(p, &a.polygon) { collision = true; break 'outer; } i += 8; }
                 }
                 if collision { continue; }
-                parts.push(GrowthPart { id: id.to_string(), parent: Some(main.id.clone()), kind: if *id == "companion" { Kind::Primary } else { Kind::Secondary }, points: c.points.clone(), polygon: a.polygon, folds: a.folds, ridges: Some(a.ridges), cuts: vec![], contour_split: Some(241), width: 3.0, length: len_c, birth: 0.2 + role as f64 * 0.1, duration: 0.25,
+                parts.push(GrowthPart { id: id.to_string(), parent: Some(main.id.clone()), kind: if *id == "companion" { Kind::Primary } else { Kind::Secondary }, points: c.points.clone(), polygon: a.polygon, folds: a.folds, ridges: Some(a.ridges), cuts: a.cuts, contour_split: Some(241), width: 3.0, length: len_c, birth: 0.2 + role as f64 * 0.1, duration: 0.25,
                     shoot: Some(ShootParams { progress: c.t, reach: c.size / length, turn: 0.0, curl: c.curl, side: c.side, leaf_side: Some(leaf_side), stem: Some(1.5), leaf_scale: Some(0.95 - (c.bend.abs() * 0.2).min(0.2)), ..ShootParams::default() }), under: false });
                 accepted = true; break;
             }

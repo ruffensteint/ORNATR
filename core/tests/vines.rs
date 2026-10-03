@@ -88,3 +88,20 @@ fn edited_curls_rebuild_exactly_and_edit_alone() {
         assert!(distance(tip(&frozen, &e.id), tip(&edited, &e.id)) < 0.01, "{} moved although only {first} was edited", e.id);
     }
 }
+
+#[test]
+fn mirroring_a_curl_turns_it_the_other_way() {
+    // the app's Mirror flips both side and turn; the vine cache once missed
+    // that change (two sign flips cancelled in its key) and showed the old curl
+    use scroll_core::shoots::ShootEdit;
+    let mut l = vine_layout(None, 2);
+    let g = l.grow();
+    l.shoots = g.parts.iter().filter(|p| p.shoot.is_some()).map(|p| ShootEdit { params: p.shoot.clone().unwrap(), id: p.id.clone(), backbone: 0, replaces: None, hidden: false, under: false }).collect();
+    let before = l.grow();
+    let id = l.shoots[0].id.clone();
+    l.shoots[0].params.side = -l.shoots[0].params.side;
+    l.shoots[0].params.turn = -l.shoots[0].params.turn;
+    let after = l.grow();
+    let tip = |g: &scroll_core::growth::GrowthResult| *g.parts.iter().find(|p| p.id == id).unwrap().points.last().unwrap();
+    assert!(distance(tip(&before), tip(&after)) > 5.0, "mirrored curl did not change");
+}

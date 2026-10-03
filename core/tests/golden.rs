@@ -33,7 +33,7 @@ fn load() -> Vec<Case> {
             }
             "shoot" => {
                 let f: Vec<&str> = rest.split_whitespace().collect();
-                let p = ShootParams { progress: f[2].parse().unwrap(), reach: f[3].parse().unwrap(), turn: f[4].parse().unwrap(), curl: f[5].parse().unwrap(), side: f[6].parse().unwrap(), leaf_side: opt(f[7]), stem: opt(f[8]), leaf_scale: opt(f[9]), lobes: opt(f[10]), depth: opt(f[11]), stalk: opt(f[12]), taper: opt(f[13]), bend: opt(f[14]), preset: opt(f[15]), follow: None, fan: None, on: None };
+                let p = ShootParams { progress: f[2].parse().unwrap(), reach: f[3].parse().unwrap(), turn: f[4].parse().unwrap(), curl: f[5].parse().unwrap(), side: f[6].parse().unwrap(), leaf_side: opt(f[7]), stem: opt(f[8]), leaf_scale: opt(f[9]), lobes: opt(f[10]), depth: opt(f[11]), stalk: opt(f[12]), taper: opt(f[13]), bend: opt(f[14]), preset: opt(f[15]), follow: None, fan: None, on: None, eyes: None };
                 cur.as_mut().unwrap().layout.shoots.push(ShootEdit { params: p, id: f[0].into(), backbone: f[1].parse().unwrap(), replaces: opt(f[16]), hidden: f[17] == "true", under: f[18] == "true" });
             }
             "part" => { let f: Vec<&str> = rest.split_whitespace().collect(); cur.as_mut().unwrap().parts.push(Part { id: f[0].into(), parent: opt(f[1]), poly: vec![], folds: vec![], ridges: vec![] }); }

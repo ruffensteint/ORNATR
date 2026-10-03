@@ -4,14 +4,17 @@ ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, writ
 
 ## Features
 
+- **Interface:** a ZBrush-inspired layout: a top shelf with the tools and the main controls for whatever is selected, a left shelf of tiles (growth types in the scroll workspace; centres and borders in the chip workspace), a right tray of folding palettes, and a status bar. The earlier panel layout is one click away (View → ZBrush-style layout, or Canvas → Layout).
 - **Scroll workspace:** grown sweeps and acanthus leaves on editable backbones, with Select (V), Pen (P) and Move/Transform (T) tools.
-  - **Construction picker:** single scroll, parent and child, S-scroll, mirrored pair, running border, point of origin and corner, each with seeded variations.
-  - **Backbones grown from other backbones:** they join like a leaf root and move with their parent. The fork can be dressed with a collar: an axil leaf lying over the crotch, or a split sheath opening along both stems.
+  - **Picking on the canvas:** click a leaf to select it, or a backbone (its stem or any of its leaves) to select that backbone. Hold **B**, **L** or **C** over the canvas to pick only backbones, leaves or collars; what a click would take is outlined first.
+  - **Construction picker:** single scroll, parent and child, S-scroll, mirrored pair, running border, point of origin, corner, and **scroll and vine** (a volute above an acanthus scroll vine), each with seeded variations. *Clad in the vine acanthus* dresses a whole construction in the scroll vine's leaf.
+  - **Backbones grown from other backbones:** they join like a leaf root and move with their parent. The fork can be dressed with a collar: an axil leaf lying over the crotch, a split sheath opening along both stems, or **paired leaves**, two baroque acanthus leaves opening from the fork (with slits and eyes when the collar is large).
+  - **Leaf dress:** *Eyes in the leaves* lets each notch run on as a narrow slit ending in a round eye, per backbone or per leaf; *Vine acanthus leaves* clads a scroll and its shoots in the scroll vine's broad-bellied leaf instead of the usual one.
   - **Library:** measured leaf types, terminal buds (husk, trefoil, berry cluster) and saved presets.
   - **Wrapping leaves** laid into a scroll's curl, either generated or taken from the library.
   - **Follow stem**, which bends a placed leaf along the stem it grows from.
   - **Leaf fans:** two or three leaves from one node, sized 100 / 66 / 33.
-  - **Scroll vines:** a backbone can grow as a vine instead: curls seeded along it, each the largest scroll that fits, branching and never touching each other or the other backbones, clad with acanthus and fitted to a **carving surface** (whole page, plaque, oval or rectangle). Each curl can be moved, turned, resized, mirrored or deleted like a library leaf.
+  - **Scroll vines:** a backbone can grow as a vine instead: curls seeded along it, each the largest scroll that fits, branching and never touching each other or the other backbones, clad with acanthus and fitted to a **carving surface** (whole page, plaque, oval or rectangle). Curls may come close to other backbones (their leaves narrow to fit) without touching them. Each curl can be moved, turned, resized, mirrored or deleted like a library leaf; *Regrow vine* grows it afresh at any time.
   - **Layers and carving guides:** over/under layering and carving guides.
   - **Root joins** (Canvas settings): *Exact* rounds the crotch where a leaf or branch grows from its stem with a true fillet (adjustable radius) and tidies tangled outlines; *Smooth* and *Classic* are the earlier styles.
 - **Chip workspace:** a chip-carving pattern generator with its own preset library.
@@ -22,7 +25,7 @@ ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, writ
   - **Lit preview:** shows the cut wood under raking light, to judge how a pattern will read before carving.
   - **Classic engine:** the earlier generator, kept unchanged; existing chip layouts open with it.
 - **Page sizes:** presets for carving pieces, box panels and paper, your own saved sizes, millimetres or inches, and a New dialog to choose the size before starting.
-- **Themes:** Graphite (default), Midnight, Slate, Studio, Paper and Sage.
+- **Themes:** Walnut (default: warm dark wood, brass accents and a cream page), Graphite, Midnight, Slate, Studio, Paper and Sage.
 
 Layouts save as `.ornatr`, the same format as the earlier browser edition; `.scrollworks` and `.json` layouts still open. Old stamped motifs are converted to grown leaves.
 

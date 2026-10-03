@@ -1,7 +1,7 @@
 //! Growth model: settings, grown parts, the curl primitive and the entry
 //! point that grows one or more backbones (with hand-edited shoots).
 use crate::geometry::{arc_table, clamp, guide_points, lerp, line_length, pt, Curve, Point};
-use crate::shoots::{apply_shoot_edits, ShootEdit, ShootParams};
+use crate::shoots::{ShootEdit, ShootParams};
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,9 +33,15 @@ pub struct GrowthSettings {
     /// mm apart, each the largest scroll that fits, branching, never touching,
     /// clad with acanthus (when `leaves` > 0) and fitted to the carving surface.
     pub vine: Option<f64>,
+    /// Eyes drilled where the leaves' notches bite in: 1 round, 2 slit and eye,
+    /// 3 teardrop; None (or 0) is none.
+    pub eyes: Option<u8>,
+    /// Clad the scroll and its generated shoots in the scroll vine's acanthus
+    /// leaf (on the outside of each turn) instead of the usual contour.
+    pub vine_leaf: Option<bool>,
 }
 impl Default for GrowthSettings {
-    fn default() -> Self { GrowthSettings { seed: 1248, branches: 5.0, reach: 33.0, curl: 1.0, levels: 2, leaves: 2, clearance: 2.0, stem: 2.8, side: Side::Alternate, family: None, composition: None, secondary_scale: None, sweeps: None, auto_shoots: None, flip: None, free: None, attach: None, wraps: None, wrap_leaf: None, collar: None, collar_style: None, vine: None } }
+    fn default() -> Self { GrowthSettings { seed: 1248, branches: 5.0, reach: 33.0, curl: 1.0, levels: 2, leaves: 2, clearance: 2.0, stem: 2.8, side: Side::Alternate, family: None, composition: None, secondary_scale: None, sweeps: None, auto_shoots: None, flip: None, free: None, attach: None, wraps: None, wrap_leaf: None, collar: None, collar_style: None, vine: None, eyes: None, vine_leaf: None } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,7 +119,7 @@ pub fn grow_backbone(inp: &GrowInput) -> GrowthResult {
         Some(n) => { let mut parts = own.parts; if let Some(i) = parts.iter().position(|p| p.parent.is_none()) { let w = crate::wraps::wrapping_leaves(&parts[i], n, s.leaves > 0, s.wrap_leaf.as_deref().and_then(crate::profiles::profile)); parts.splice(i + 1..i + 1, w); } GrowthResult { parts, ..own } }
         None => own,
     };
-    let result = apply_shoot_edits(own, &guide_points(&page.curve), inp.shoots, s.leaves > 0);
+    let result = crate::shoots::apply_shoot_edits_eyes(own, &guide_points(&page.curve), inp.shoots, s.leaves > 0, s.eyes.unwrap_or(0));
     let resize = |p: &Point| pt(p.x * scale, p.y * scale);
     let parts = result.parts.into_iter().map(|p| {
         if let Some(l) = inp.locked.iter().find(|q| q.id == p.id) { return l.clone(); }

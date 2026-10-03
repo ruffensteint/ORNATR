@@ -1,11 +1,14 @@
 //! Collars: leafage dressing the fork where one stem grows from another, as
-//! in baroque acanthus, where a branch rarely leaves its parent bare. Two
+//! in baroque acanthus, where a branch rarely leaves its parent bare. Three
 //! styles, chosen by the user from studies (the plain calyx and the cuff were
 //! set aside):
 //! - Axil leaf: an acanthus leaf rooted into the parent just before the fork,
 //!   lying over the crotch with its tip lifting out.
 //! - Split sheath: two leaves opening out of the fork, one along each stem,
 //!   like a bud splitting.
+//! - Paired leaves: two baroque leaves (the vine's leaf model) opening from the
+//!   fork, one along each stem; slits and eyes only when the collar is large.
+//! Turned leaf and Clasping leaf were studied (2026-10-03) and set aside.
 //! Collar leaves root into the parent stem like any leaf, so their bases merge.
 use crate::geometry::{distance, pt, Point};
 use crate::growth::{GrowthPart, Kind};
@@ -16,12 +19,15 @@ fn half_width(polygon: &[Point], p: Point) -> f64 { polygon.iter().map(|q| dista
 pub fn is_collar(p: &GrowthPart) -> bool { p.id.rsplit('/').next().is_some_and(|s| s.starts_with("collar")) }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum CollarStyle { Axil, Split }
+pub enum CollarStyle { Axil, Split, Turned, Clasp, Pair }
 impl CollarStyle {
-    pub const ALL: [CollarStyle; 2] = [CollarStyle::Axil, CollarStyle::Split];
-    pub fn id(self) -> &'static str { match self { CollarStyle::Axil => "axil", CollarStyle::Split => "split" } }
-    pub fn name(self) -> &'static str { match self { CollarStyle::Axil => "Axil leaf", CollarStyle::Split => "Split sheath" } }
-    pub fn from_id(s: &str) -> Option<CollarStyle> { CollarStyle::ALL.into_iter().find(|c| c.id() == s) }
+    /// The styles offered in the app.
+    pub const ALL: [CollarStyle; 3] = [CollarStyle::Axil, CollarStyle::Split, CollarStyle::Pair];
+    /// Every style, the study candidates (built from the baroque leaf model) included.
+    pub const STUDY: [CollarStyle; 5] = [CollarStyle::Axil, CollarStyle::Split, CollarStyle::Turned, CollarStyle::Clasp, CollarStyle::Pair];
+    pub fn id(self) -> &'static str { match self { CollarStyle::Axil => "axil", CollarStyle::Split => "split", CollarStyle::Turned => "turned", CollarStyle::Clasp => "clasp", CollarStyle::Pair => "pair" } }
+    pub fn name(self) -> &'static str { match self { CollarStyle::Axil => "Axil leaf", CollarStyle::Split => "Split sheath", CollarStyle::Turned => "Turned leaf", CollarStyle::Clasp => "Clasping leaf", CollarStyle::Pair => "Paired leaves" } }
+    pub fn from_id(s: &str) -> Option<CollarStyle> { CollarStyle::STUDY.into_iter().find(|c| c.id() == s) }
 }
 
 /// The fork's frame: join point, parent tangent (pointing the way the child
@@ -88,6 +94,52 @@ pub fn collar_parts(style: CollarStyle, id: &str, parent: &GrowthPart, child: &G
             let along = { let s = pt(f.t.x + away.x * 0.12, f.t.y + away.y * 0.12); let l = s.x.hypot(s.y); pt(s.x / l, s.y / l) };
             let up = { let o = pt(f.d.x - f.t.x * 0.3, f.d.y - f.t.y * 0.3); let l = o.x.hypot(o.y); pt(o.x / l, o.y / l) };
             vec![leaf(along, -toward_child * 0.35, toward_child, "-a", 6.5), leaf(up, toward_child * 0.35, -toward_child, "-b", 5.8)]
+        }
+        // study candidates, built from the baroque leaf model (lobe groups
+        // with fingers, slits ending in eyes, pipes) instead of a plain contour
+        CollarStyle::Turned => {
+            // one full leaf over the crotch; its tip turns back out over the parent
+            let root = pt(f.j.x - f.t.x * f.r * 0.7, f.j.y - f.t.y * f.r * 0.7);
+            let b = { let s = pt(f.t.x + f.d.x, f.t.y + f.d.y); let l = s.x.hypot(s.y); pt(s.x / l, s.y / l) };
+            let spine = arc_spine(root, ang(b) + toward_child * 0.1, f.r * 10.0, -toward_child * 1.35, 120);
+            let spec = crate::acanthus::LeafSpec { groups: 2, fingers: 2, width: 0.21, hook: 0.7, eye: 0.36, notch: 0.2, pipes: true, cut: 0.55, stalk: 0.12 };
+            let leaf = crate::acanthus::baroque_leaf(&spine, &spec, toward_child < 0.0);
+            let mut p = part(format!("{id}-leaf"), parent, leaf.polygon, leaf.folds, spine, f.r); p.cuts = leaf.cuts;
+            vec![p]
+        }
+        CollarStyle::Clasp => {
+            // a one-sided leaf sheathing the branch's base, its lobes filling the crotch
+            let (first, last) = (child.points[0], *child.points.last().unwrap());
+            let along: Vec<Point> = if distance(first, join) <= distance(last, join) { child.points.clone() } else { child.points.iter().rev().copied().collect() };
+            let back = pt(f.j.x - f.t.x * f.r * 0.8, f.j.y - f.t.y * f.r * 0.8);
+            let mut spine = vec![back];
+            let mut run = distance(back, along[0]);
+            for q in &along { if run > f.r * 9.0 { break; } run += distance(*spine.last().unwrap(), *q); spine.push(*q); }
+            if spine.len() < 4 { return vec![]; }
+            // the crotch side: across the branch, toward the parent's way on
+            let n = pt(-f.d.y, f.d.x);
+            let outer = if n.x * f.t.x + n.y * f.t.y >= 0.0 { 1.0 } else { -1.0 };
+            let spec = crate::acanthus::LeafSpec { groups: 2, fingers: 2, notch: 0.2, eye: 0.38, cut: 0.62, stalk: 0.08, ..crate::acanthus::LeafSpec::default() };
+            let leaf = crate::acanthus::clad_scroll(&spine, &spec, outer, f.r * 3.2, f.r * 0.45);
+            let mut p = part(format!("{id}-leaf"), parent, leaf.polygon, leaf.folds, spine, f.r); p.cuts = leaf.cuts;
+            vec![p]
+        }
+        CollarStyle::Pair => {
+            // two baroque leaves opening from the fork: a long one along the
+            // parent's way on, a shorter one up the branch, tips turning outward
+            // slits and eyes only on a large collar: small, they read as specks
+            let large = f.r * 8.0 >= 60.0;
+            let spec = crate::acanthus::LeafSpec { groups: 1, fingers: 2, width: 0.22, hook: 0.7, eye: if large { 0.36 } else { 0.0 }, notch: if large { 0.2 } else { 0.24 }, pipes: true, cut: if large { 0.55 } else { 0.0 }, stalk: 0.14 };
+            let leaf = |dir: Point, bend: f64, len: f64, flip: bool, k: &str| {
+                let root = pt(f.j.x - dir.x * f.r * 0.6, f.j.y - dir.y * f.r * 0.6);
+                let spine = arc_spine(root, ang(dir), f.r * len, bend, 100);
+                let l = crate::acanthus::baroque_leaf(&spine, &spec, flip);
+                let mut p = part(format!("{id}{k}"), parent, l.polygon, l.folds, spine, f.r); p.cuts = l.cuts; p
+            };
+            let away = pt(-f.n.x, -f.n.y);
+            let on = { let s = pt(f.t.x + away.x * 0.25, f.t.y + away.y * 0.25); let l = s.x.hypot(s.y); pt(s.x / l, s.y / l) };
+            let up = { let o = pt(f.d.x - f.t.x * 0.35, f.d.y - f.t.y * 0.35); let l = o.x.hypot(o.y); pt(o.x / l, o.y / l) };
+            vec![leaf(on, -toward_child * 0.8, 8.0, toward_child > 0.0, "-a"), leaf(up, toward_child * 0.8, 6.5, toward_child < 0.0, "-b")]
         }
     }
 }

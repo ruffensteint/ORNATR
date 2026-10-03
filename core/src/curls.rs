@@ -35,9 +35,13 @@ pub struct ScrollOptions {
     /// this radius, mm.
     pub fill_gap: f64,
     pub seed: u32,
+    /// How much of a curl's band must keep clear of obstacles (other backbones'
+    /// parts), as a share of its half-width: 1 = the whole band, less lets
+    /// curls grow nearer and their leaves narrow to fit (the dressing checks).
+    pub obstacle_reach: f64,
 }
 impl Default for ScrollOptions {
-    fn default() -> Self { ScrollOptions { seed_spacing: 45.0, max_length: 150.0, min_length: 22.0, width: 5.0, clearance: 3.0, generations: 3, branch_from: 0.0, fill_gap: 0.0, seed: 1 } }
+    fn default() -> Self { ScrollOptions { seed_spacing: 45.0, max_length: 150.0, min_length: 22.0, width: 5.0, clearance: 3.0, generations: 3, branch_from: 0.0, fill_gap: 0.0, seed: 1, obstacle_reach: 1.0 } }
 }
 
 /// A grown scroll. `parent` is what it branches from: 0 is the curve, i + 1 is scroll i.
@@ -79,12 +83,13 @@ impl Placed {
     fn add(&mut self, pts: &[Point], widths: impl Fn(usize) -> f64, owner: usize) { for (i, p) in pts.iter().enumerate() { let k = self.key(*p); self.grid.entry(k).or_default().push((*p, widths(i), owner)); } }
     /// Whether `p` (with half-width `w`) keeps `gap` from everything, except
     /// the stem it grows from near its root.
-    fn clear(&self, p: Point, w: f64, gap: f64, except: Option<(usize, Point, f64)>) -> bool {
+    fn clear(&self, p: Point, w: f64, gap: f64, obstacle_reach: f64, except: Option<(usize, Point, f64)>) -> bool {
         let (cx, cy) = self.key(p); let n = ((gap + w + 6.0) / self.cell).ceil() as i64;
         for x in cx - n..=cx + n { for y in cy - n..=cy + n {
             let Some(v) = self.grid.get(&(x, y)) else { continue };
             for (q, qw, owner) in v {
                 if let Some((stem, at, r)) = except { if *owner == stem && distance(*q, at) < r { continue; } }
+                let w = if *owner == OBSTACLE { w * obstacle_reach } else { w };
                 if distance(p, *q) < gap + w + qw { return false; }
             }
         }}
@@ -134,7 +139,7 @@ impl Ctx<'_> {
                 let ok = spine.iter().enumerate().all(|(i, p)| {
                     let w = half_width(self.o.width, i, n);
                     inside(*p, self.surface) && self.edge(*p) >= w + self.o.clearance && !self.in_obstacle(*p)
-                        && (i < 4 || self.placed.clear(*p, w, self.o.clearance, Some((stem, root, (self.o.width + self.o.clearance) * 3.5))))
+                        && (i < 4 || self.placed.clear(*p, w, self.o.clearance, self.o.obstacle_reach, Some((stem, root, (self.o.width + self.o.clearance) * 3.5))))
                 });
                 if ok { return Some((spine, len)); }
             }
@@ -440,4 +445,25 @@ pub fn build_scrolls(curve: &[Point], edits: &[(String, crate::shoots::ShootPara
         pending = left;
     }
     ScrollResult { curve: path, scrolls, outside: 0.0 }
+}
+
+/// Clad an ordinary grown scroll in the vine's acanthus leaf (the user's pick,
+/// 2026-10-03): the main sweep and every generated shoot get the one-sided
+/// leaf on the outside of their turn, as vine curls do. Library leaves, buds,
+/// wrapping leaves and collars keep their own shapes. `k` scales the leaf's
+/// largest reach with the page, as for vines.
+pub fn clad_in_vine_leaf(mut g: crate::growth::GrowthResult, k: f64) -> crate::growth::GrowthResult {
+    let (spec, reach, max_half) = scroll_leaf();
+    for p in g.parts.iter_mut() {
+        if p.points.len() < 8 || crate::collar::is_collar(p) || p.id.rsplit('/').next().is_some_and(|s| s.starts_with("wrap-")) { continue; }
+        if p.shoot.as_ref().and_then(|s| s.preset.as_deref()).is_some() { continue; }
+        let main = p.parent.is_none();
+        let len = crate::geometry::line_length(&p.points);
+        let half = (len * reach).min(max_half * k) * if main { 0.5 } else { 1.0 };
+        let stem = if main { (p.width * 0.5).clamp(1.5, 4.0) } else { 1.6 };
+        let own = crate::acanthus::LeafSpec { groups: if len < 90.0 { 1 } else { spec.groups }, ..spec };
+        let leaf = crate::acanthus::clad_scroll(&p.points, &own, -turn_of(&p.points), half, stem);
+        p.polygon = leaf.polygon; p.folds = leaf.folds; p.cuts = leaf.cuts; p.ridges = Some(vec![]);
+    }
+    g
 }

@@ -12,11 +12,11 @@ use crate::model::Layout;
 use crate::shoots::ShootEdit;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Skeleton { Single, ParentChild, SScroll, MirroredPair, RunningBorder, Fan, Corner }
+pub enum Skeleton { Single, ParentChild, SScroll, MirroredPair, RunningBorder, Fan, Corner, ScrollVine }
 
 impl Skeleton {
-    pub const ALL: [Skeleton; 7] = [Skeleton::Single, Skeleton::ParentChild, Skeleton::SScroll, Skeleton::MirroredPair, Skeleton::RunningBorder, Skeleton::Fan, Skeleton::Corner];
-    pub fn name(self) -> &'static str { match self { Skeleton::Single => "Single scroll", Skeleton::ParentChild => "Parent and child", Skeleton::SScroll => "S-scroll", Skeleton::MirroredPair => "Mirrored pair", Skeleton::RunningBorder => "Running border", Skeleton::Fan => "Point of origin", Skeleton::Corner => "Corner" } }
+    pub const ALL: [Skeleton; 8] = [Skeleton::Single, Skeleton::ParentChild, Skeleton::SScroll, Skeleton::MirroredPair, Skeleton::RunningBorder, Skeleton::Fan, Skeleton::Corner, Skeleton::ScrollVine];
+    pub fn name(self) -> &'static str { match self { Skeleton::Single => "Single scroll", Skeleton::ParentChild => "Parent and child", Skeleton::SScroll => "S-scroll", Skeleton::MirroredPair => "Mirrored pair", Skeleton::RunningBorder => "Running border", Skeleton::Fan => "Point of origin", Skeleton::Corner => "Corner", Skeleton::ScrollVine => "Scroll and vine" } }
     pub fn detail(self) -> &'static str { match self {
         Skeleton::Single => "One backbone rising into a volute: the original construction",
         Skeleton::ParentChild => "A main volute with a smaller scroll forking from its sweep",
@@ -25,12 +25,15 @@ impl Skeleton {
         Skeleton::RunningBorder => "Scrolls chained along a band, each smaller than the last",
         Skeleton::Fan => "Scrolls fanning from one root, sized 100 / 66 / 33",
         Skeleton::Corner => "Two scrolls along the edges from a corner bud",
+        Skeleton::ScrollVine => "A volute above, an acanthus scroll vine running beneath it",
     } }
 }
 
 /// One scroll of a construction, in a 240 × 150 design frame (y down,
 /// angles in degrees, 0 = right, -90 = up).
-struct Stem { start: (f64, f64), a0: f64, end: (f64, f64), a1: f64, k0: f64, k1: f64, curl: Side, attach: Option<usize>, accents: u8, scale: f64, flip: bool, family: Family }
+struct Stem { start: (f64, f64), a0: f64, end: (f64, f64), a1: f64, k0: f64, k1: f64, curl: Side, attach: Option<usize>, accents: u8, scale: f64, flip: bool, family: Family,
+    /// Grown as a scroll vine (acanthus curls along the stem).
+    vine: bool }
 
 fn dir(deg: f64) -> Point { let r = deg.to_radians(); pt(r.cos(), r.sin()) }
 fn curve(s: &Stem) -> Curve {
@@ -53,7 +56,7 @@ fn design(kind: Skeleton, seed: u32) -> (Vec<Stem>, Vec<BudAt>) {
     let mut rng = Mulberry(seed.wrapping_mul(2654435761).wrapping_add(kind as u32));
     let mut j = |amount: f64| (rng.next() * 2.0 - 1.0) * amount;
     // Curl sides turn relative to the heading: Right = clockwise on the page.
-    let st = |start: (f64, f64), a0: f64, end: (f64, f64), a1: f64, curl: Side| Stem { start, a0, end, a1, k0: 0.42, k1: 0.36, curl, attach: None, accents: 2, scale: 1.0, flip: false, family: Family::Spiral };
+    let st = |start: (f64, f64), a0: f64, end: (f64, f64), a1: f64, curl: Side| Stem { start, a0, end, a1, k0: 0.42, k1: 0.36, curl, attach: None, accents: 2, scale: 1.0, flip: false, family: Family::Spiral, vine: false };
     let point_on = |s: &Stem, t: f64| { let c = curve(s); let p = arc_table(&c)[(t.clamp(0.0, 1.0) * 240.0) as usize].point; (p.x, p.y) };
     let mirror_all = j(1.0) > 0.0;
     let (mut stems, mut buds) = match kind {
@@ -150,6 +153,15 @@ fn design(kind: Skeleton, seed: u32) -> (Vec<Stem>, Vec<BudAt>) {
             let bud = ["bud-husk", "bud-trefoil", "bud-berries"][((j(1.0) + 1.0) * 1.5) as usize % 3];
             (vec![a, b], vec![BudAt { backbone: 0, progress: 0.0, heading: -45.0, kind: bud }])
         }
+        Skeleton::ScrollVine => {
+            // The single scroll drawn into the upper part of the frame, and a
+            // waved stem along the bottom grown as an acanthus scroll vine
+            // (the user's pick from the vine studies, 2026-10-03).
+            let turn = if j(1.0) > 0.0 { Side::Right } else { Side::Alternate };
+            let main = Stem { k0: 0.25 + j(0.06), k1: 0.6 + j(0.08), ..st((57.0, 69.0 + j(4.0)), 14.0 + j(8.0), (187.0 + j(6.0), 53.0 + j(5.0)), 13.0 + j(10.0), turn) };
+            let vine = Stem { k0: 0.34, k1: 0.4, accents: 0, vine: true, ..st((10.0, 120.0 + j(4.0)), 23.0 + j(6.0), (232.0, 128.0 + j(4.0)), 21.0 + j(6.0), Side::Alternate) };
+            (vec![main, vine], vec![])
+        }
     };
     // Mirroring the whole construction is a variation that never breaks it.
     if mirror_all {
@@ -171,6 +183,7 @@ pub fn skeleton_layout(kind: Skeleton, seed: u32, width: f64, height: f64) -> La
         seed: seed.wrapping_add(i as u32 * 7919), family: Some(s.family), side: s.curl, levels: if s.accents >= 2 { 2 } else { 1 },
         auto_shoots: Some(s.accents > 0), secondary_scale: Some(s.scale.clamp(0.5, 2.0)), flip: if s.flip { Some(true) } else { None },
         free: Some(true), attach: s.attach,
+        vine: if s.vine { Some(60.0) } else { None },
         // collars dress each fork; left bare where a bud already sits on the join
         // (corner, mirrored pair) and on the fan, whose roots are too close together
         collar: if s.attach.is_some() && !matches!(kind, Skeleton::Corner | Skeleton::MirroredPair | Skeleton::Fan) { Some(1.0) } else { None },
@@ -188,7 +201,9 @@ pub fn skeleton_layout(kind: Skeleton, seed: u32, width: f64, height: f64) -> La
     let s0 = (width / 240.0).min(height / 150.0);
     scaled(&mut l, s0, pt(120.0, 75.0), pt(width / 2.0, height / 2.0));
     let margin = (width.min(height) * 0.05).max(4.0);
-    for _ in 0..4 {
+    // a vine fills the page itself and takes a moment to grow: no refitting
+    let refits = if stems.iter().any(|s| s.vine) { 0 } else { 4 };
+    for _ in 0..refits {
         let grown = l.grow();
         let all: Vec<Point> = grown.parts.iter().flat_map(|p| p.polygon.iter().copied()).collect();
         if all.is_empty() { break; }

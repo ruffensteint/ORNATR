@@ -19,26 +19,30 @@ pub struct ShootParams {
     pub fan: Option<u8>,
     /// Scroll-vine curls: the curl this one grows from (None: the vine's stem).
     pub on: Option<String>,
+    /// This leaf's eyes (as `GrowthSettings::eyes`); None follows its backbone.
+    pub eyes: Option<u8>,
 }
 /// The preset id marking a scroll-vine curl.
 pub const VINE_CURL: &str = "vine-curl";
 impl Default for ShootParams {
-    fn default() -> Self { ShootParams { progress: 0.5, reach: 0.12, turn: 0.0, curl: 0.66, side: 1.0, leaf_side: None, stem: None, leaf_scale: None, lobes: None, depth: None, stalk: None, taper: None, bend: None, preset: None, follow: None, fan: None, on: None } }
+    fn default() -> Self { ShootParams { progress: 0.5, reach: 0.12, turn: 0.0, curl: 0.66, side: 1.0, leaf_side: None, stem: None, leaf_scale: None, lobes: None, depth: None, stalk: None, taper: None, bend: None, preset: None, follow: None, fan: None, on: None, eyes: None } }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShootEdit { pub params: ShootParams, pub id: String, pub backbone: usize, pub replaces: Option<String>, pub hidden: bool, pub under: bool }
 
 pub fn leaf_side_for(curl: f64, side: f64) -> f64 { if curl >= 0.5 { -side } else { side } }
 
-pub fn grow_shoot(guide: &[Point], parent: &GrowthPart, e: &ShootParams, id: &str, leaves: bool) -> GrowthPart {
+pub fn grow_shoot(guide: &[Point], parent: &GrowthPart, e: &ShootParams, id: &str, leaves: bool) -> GrowthPart { grow_shoot_eyes(guide, parent, e, id, leaves, 0) }
+/// As `grow_shoot`, with the backbone's eye style for leaves that do not set their own.
+pub fn grow_shoot_eyes(guide: &[Point], parent: &GrowthPart, e: &ShootParams, id: &str, leaves: bool, eyes: u8) -> GrowthPart {
     if e.preset.as_deref().is_some_and(crate::bud::is_bud) { return crate::bud::grow_bud(guide, parent, e, id); }
     if let Some(p) = e.preset.as_deref().and_then(profile) { return grow_measured(guide, parent, e, id, p, leaves); }
     let guide_length = line_length(guide); let (fp, fa) = line_frame(guide, e.progress); let reach = e.reach * guide_length;
     let points = grow_curl(fp, fa + e.turn, reach, e.curl, e.side); let length = line_length(&points);
     let leaf_width = length * (1.0 - PHI) * (if e.curl >= 0.5 { PHI } else { 1.0 }) * e.leaf_scale.unwrap_or(1.0);
-    let o = ContourOptions { lobed: leaves, root_width: root_flare(&parent.polygon, fp, length * (1.0 - PHI) * PHI), stalk: e.stalk.unwrap_or_else(shoot_stalk), notches: notches_for(e.lobes.unwrap_or(2), e.depth.unwrap_or(1.0)), taper: e.taper.unwrap_or(0.42), ..ContourOptions::default() };
+    let o = ContourOptions { lobed: leaves, root_width: root_flare(&parent.polygon, fp, length * (1.0 - PHI) * PHI), stalk: e.stalk.unwrap_or_else(shoot_stalk), notches: notches_for(e.lobes.unwrap_or(2), e.depth.unwrap_or(1.0)), taper: e.taper.unwrap_or(0.42), eyes: e.eyes.unwrap_or(eyes), ..ContourOptions::default() };
     let a = acanthus_contour(&points, e.stem.unwrap_or(1.5), e.leaf_side.unwrap_or_else(|| leaf_side_for(e.curl, e.side)), leaf_width, &o);
-    GrowthPart { id: id.into(), parent: Some(parent.id.clone()), kind: Kind::Secondary, points, polygon: a.polygon, folds: a.folds, ridges: Some(a.ridges), cuts: vec![], contour_split: Some(241), width: 3.0, length, birth: 0.35, duration: 0.25, shoot: Some(e.clone()), under: false }
+    GrowthPart { id: id.into(), parent: Some(parent.id.clone()), kind: Kind::Secondary, points, polygon: a.polygon, folds: a.folds, ridges: Some(a.ridges), cuts: a.cuts, contour_split: Some(241), width: 3.0, length, birth: 0.35, duration: 0.25, shoot: Some(e.clone()), under: false }
 }
 
 /// The stem path a following leaf is bent along: from the stem point nearest
@@ -147,17 +151,18 @@ pub const FAN_SWING: f64 = 0.42;
 
 /// Apply one backbone's edits: replaced shoots drop out, tucked leaves go
 /// beneath the main sweep, everything else is drawn above it.
-pub fn apply_shoot_edits(result: GrowthResult, guide: &[Point], edits: &[ShootEdit], leaves: bool) -> GrowthResult {
+pub fn apply_shoot_edits(result: GrowthResult, guide: &[Point], edits: &[ShootEdit], leaves: bool) -> GrowthResult { apply_shoot_edits_eyes(result, guide, edits, leaves, 0) }
+pub fn apply_shoot_edits_eyes(result: GrowthResult, guide: &[Point], edits: &[ShootEdit], leaves: bool, eyes: u8) -> GrowthResult {
     if edits.is_empty() { return result; }
     let Some(main) = result.parts.iter().find(|p| p.parent.is_none()).cloned() else { return result; };
     let replaced: Vec<&str> = edits.iter().filter_map(|e| e.replaces.as_deref()).collect();
     let kept: Vec<GrowthPart> = result.parts.into_iter().filter(|p| !replaced.contains(&p.id.as_str())).collect();
     let grown: Vec<(bool, GrowthPart)> = edits.iter().filter(|e| !e.hidden).flat_map(|e| {
-        let mut part = grow_shoot(guide, &main, &e.params, &e.id, leaves); part.under = e.under;
+        let mut part = grow_shoot_eyes(guide, &main, &e.params, &e.id, leaves, eyes); part.under = e.under;
         // fan companions sit behind the lead (smallest furthest back) and are
         // edited through the lead leaf, so they carry no shoot of their own
 
-        let members = fan_members(&e.params).into_iter().enumerate().map(|(k, p)| { let mut m = grow_shoot(guide, &main, &p, &format!("{}~fan{}", e.id, k + 1), leaves); m.shoot = None; m.under = e.under; (e.under, m) }).collect::<Vec<_>>();
+        let members = fan_members(&e.params).into_iter().enumerate().map(|(k, p)| { let mut m = grow_shoot_eyes(guide, &main, &p, &format!("{}~fan{}", e.id, k + 1), leaves, eyes); m.shoot = None; m.under = e.under; (e.under, m) }).collect::<Vec<_>>();
         members.into_iter().rev().chain(std::iter::once((e.under, part))).collect::<Vec<_>>()
     }).collect();
     let mut parts: Vec<GrowthPart> = grown.iter().filter(|g| g.0).map(|g| g.1.clone()).collect();

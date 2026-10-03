@@ -6,6 +6,7 @@ mod chip_ui;
 mod io;
 mod page_sizes;
 mod presets;
+mod shelf;
 mod theme;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
@@ -13,7 +14,7 @@ use scroll_core::geometry::{distance, fit_curve, pt, Bounds, Curve, Point};
 use scroll_core::growth::{Family, GrowthPart, GrowthResult, GrowthSettings, Side};
 use scroll_core::layers::{carving_guides, layered_drawing, Drawing, Guides};
 use scroll_core::bud::{is_bud, BUD_PRESETS};
-use scroll_core::collar::CollarStyle;
+use scroll_core::collar::{is_collar, CollarStyle};
 use scroll_core::model::{convert_legacy, preset_params, Layout, LEAF_PRESETS};
 use scroll_core::skeleton::{skeleton_layout, Skeleton};
 use scroll_core::outline::inside;
@@ -41,6 +42,9 @@ enum Workspace { Scroll, Chip }
 enum Pending { New, Open, Close }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab { Properties, Leaves, Layers, Carving, Theme }
+/// What a click on the canvas takes while a pick key is held (B, L or C).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick { Backbone, Leaf, Collar }
 
 enum Drag {
     Pan,
@@ -99,10 +103,14 @@ struct App {
     skeleton: Option<Skeleton>,
     skel_seed: u32,
     skel_thumbs: Vec<Option<Vec<Vec<Point>>>>,
+    /// Constructions are built clad in the vine acanthus leaf.
+    skel_vine_leaf: bool,
     /// Preset and saved page sizes; the New dialog while it is open; the size the next new scroll pattern gets.
     page_sizes: page_sizes::PageSizes,
     new_dialog: Option<page_sizes::NewDialog>,
     new_size: Option<(f64, f64)>,
+    /// Shelf layout: which palettes in the right tray are open.
+    palettes: [bool; shelf::PALETTES],
 }
 
 impl App {
@@ -112,7 +120,7 @@ impl App {
         let layout = Layout::starter();
         let mut app = App { layout, path: None, dirty: false, past: vec![], future: vec![], tool: Tool::Select, tab: Tab::Properties, backbone: 0, selected: None, carving: false, show_guides: true, grid: false,
             grown: GrowthResult::default(), drawing: Drawing { outline: vec![], folds: vec![] }, smooth_due: false, guides: None, stale: true, zoom: 3.0, origin: Pos2::ZERO, fitted: false, drag: None, drag_before: None, message: String::new(), cursor_mm: None, shown_title: String::new(), pending: None, allow_close: false, prefs, applied: None, scale_draft: prefs.ui_scale, fillet_draft: prefs.fillet,
-            workspace: if prefs.chip { Workspace::Chip } else { Workspace::Scroll }, chip: chip_ui::ChipState::new(), scroll_presets: presets::Library::load("scroll-presets.json"), scroll_thumbs: vec![], skeleton: None, skel_seed: 0, skel_thumbs: vec![None; Skeleton::ALL.len()], page_sizes: page_sizes::PageSizes::load(), new_dialog: None, new_size: None };
+            workspace: if prefs.chip { Workspace::Chip } else { Workspace::Scroll }, chip: chip_ui::ChipState::new(), scroll_presets: presets::Library::load("scroll-presets.json"), scroll_thumbs: vec![], skeleton: None, skel_seed: 0, skel_thumbs: vec![None; Skeleton::ALL.len()], skel_vine_leaf: false, page_sizes: page_sizes::PageSizes::load(), new_dialog: None, new_size: None, palettes: shelf::DEFAULT_OPEN };
         app.regrow();
         app
     }
@@ -353,8 +361,25 @@ impl eframe::App for App {
         if self.stale { self.regrow(); }
         let title = if self.workspace == Workspace::Chip { self.chip.title() } else { self.title() };
         if title != self.shown_title { ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone())); self.shown_title = title; }
-        self.menu_bar(ctx);
         let desk = egui::Frame::none().fill(self.canvas_colors().desk);
+        if self.prefs.shelf {
+            self.shelf_top_bar(ctx);
+            if self.workspace == Workspace::Chip {
+                self.chip_shelf_context(ctx);
+                self.chip_shelf_status(ctx);
+                self.chip_shelf_tools(ctx);
+                self.chip_shelf_tray(ctx);
+                egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.chip_canvas(ui));
+            } else {
+                self.shelf_context(ctx);
+                self.shelf_status(ctx);
+                self.shelf_tools(ctx);
+                self.shelf_tray(ctx);
+                egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.canvas(ui));
+            }
+            return;
+        }
+        self.menu_bar(ctx);
         if self.workspace == Workspace::Chip {
             self.chip_status(ctx);
             self.chip_side_panel(ctx);
@@ -421,7 +446,18 @@ impl App {
             egui::menu::bar(ui, |ui| {
                 ui.label(egui::RichText::new("ORNATR").family(egui::FontFamily::Name("semibold".into())).size(15.0).color(t.text));
                 ui.add_space(10.0);
-                if self.workspace == Workspace::Chip { self.chip_menus(ui); } else {
+                if self.workspace == Workspace::Chip { self.chip_menus(ui); } else { self.scroll_menus(ui); }
+                ui.add_space(16.0);
+                let mut ws = self.workspace;
+                ui.allocate_ui(Vec2::new(170.0, 28.0), |ui| segmented(ui, t, &[(Workspace::Scroll, "Scroll"), (Workspace::Chip, "Chip")], &mut ws));
+                if ws != self.workspace { self.workspace = ws; self.set_prefs(Prefs { chip: ws == Workspace::Chip, ..self.prefs }); }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("Runs offline · no AI").small().color(t.dim)); });
+            });
+        });
+    }
+
+    /// The scroll workspace's File, Edit and View menus (both layouts).
+    fn scroll_menus(&mut self, ui: &mut egui::Ui) {
                 ui.menu_button("File", |ui| {
                     if ui.add(egui::Button::new("New…").shortcut_text("Ctrl+N")).clicked() { self.open_new_dialog(); ui.close_menu(); }
                     if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() { ui.close_menu(); self.ask(Pending::Open); }
@@ -447,15 +483,9 @@ impl App {
                     ui.menu_button("Theme", |ui| {
                         for id in ThemeId::ALL { if ui.selectable_label(self.prefs.theme == id, id.theme().name).clicked() { self.set_prefs(Prefs { theme: id, ..self.prefs }); ui.close_menu(); } }
                     });
+                    let mut shelf = self.prefs.shelf;
+                    if ui.checkbox(&mut shelf, "ZBrush-style layout").on_hover_text("Shelves along the top and left, palettes on the right. Untick for the classic panels.").changed() { self.set_prefs(Prefs { shelf, ..self.prefs }); ui.close_menu(); }
                 });
-                }
-                ui.add_space(16.0);
-                let mut ws = self.workspace;
-                ui.allocate_ui(Vec2::new(170.0, 28.0), |ui| segmented(ui, t, &[(Workspace::Scroll, "Scroll"), (Workspace::Chip, "Chip")], &mut ws));
-                if ws != self.workspace { self.workspace = ws; self.set_prefs(Prefs { chip: ws == Workspace::Chip, ..self.prefs }); }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("Runs offline · no AI").small().color(t.dim)); });
-            });
-        });
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
@@ -522,10 +552,20 @@ impl App {
         else if self.tool != Tool::Transform { self.construction(ui); }
         if self.tool == Tool::Transform {
             section(ui, self.t(), "Transform");
-            ui.label(egui::RichText::new("Drag inside the box to move, a corner to scale, the round knob to rotate (Shift snaps to 15°). Leaves stay attached.").small().color(self.t().dim));
-            ui.horizontal(|ui| { if ui.button("Flip horizontal").clicked() { self.flip(Axis::Horizontal); } if ui.button("Flip vertical").clicked() { self.flip(Axis::Vertical); } });
+            self.transform_section(ui);
         }
         section(ui, self.t(), "Backbone");
+        self.backbone_section(ui);
+        self.page_section(ui);
+    }
+
+    fn transform_section(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Drag inside the box to move, a corner to scale, the round knob to rotate (Shift snaps to 15°). Leaves stay attached.").small().color(self.t().dim));
+        ui.horizontal(|ui| { if ui.button("Flip horizontal").clicked() { self.flip(Axis::Horizontal); } if ui.button("Flip vertical").clicked() { self.flip(Axis::Vertical); } });
+    }
+
+    /// The selected backbone: which one, its fork and what it grows.
+    fn backbone_section(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let n = self.layout.curves.len();
             egui::ComboBox::from_id_salt("backbone").selected_text(format!("Backbone {}", self.backbone + 1)).show_ui(ui, |ui| { for i in 0..n { ui.selectable_value(&mut self.backbone, i, format!("Backbone {}", i + 1)); } });
@@ -574,11 +614,14 @@ impl App {
             // curls edited by hand: the vine is built from them until it is regrown
             let b = self.backbone;
             let edited = self.layout.shoots.iter().filter(|e| e.backbone == b && e.params.preset.as_deref() == Some(VINE_CURL)).count();
-            let mut regrow = false;
             if edited > 0 {
                 ui.label(egui::RichText::new(format!("{edited} curls kept as edited. Changing Variation or Seed spacing, or Regrow, grows the vine afresh (Undo brings your edits back).")).small().color(self.t().dim));
-                regrow = ui.button("Regrow vine").clicked();
             }
+            // always offered: with hand edits it drops them; on an untouched vine
+            // (which would regrow the same) it grows the next variation
+            let tip = if edited > 0 { "Grow the vine afresh from its Variation, dropping the curls edited by hand (Undo brings them back)" } else { "Grow the vine afresh as the next variation" };
+            let regrow = ui.button("Regrow vine").on_hover_text(tip).clicked();
+            if regrow && edited == 0 { g.seed = (g.seed + 1) % 100000; }
             let reseeded = g.seed != before.seed || g.vine != before.vine;
             if g != before || regrow {
                 let mut next = self.layout.clone();
@@ -588,7 +631,6 @@ impl App {
                 self.commit(next);
                 if regrow || reseeded { self.selected = None; }
             }
-            self.page_section(ui);
             return;
         }
         let fam = g.family.unwrap_or(Family::Spiral);
@@ -618,6 +660,10 @@ impl App {
             if let Some(v) = pick { g.wrap_leaf = v; }
         }
         let mut leaves = g.leaves > 0; if ui.checkbox(&mut leaves, "Leaf lobes and folds").changed() { g.leaves = if leaves { 2 } else { 0 }; }
+        let mut eyes = g.eyes.unwrap_or(0) > 0;
+        if ui.add_enabled(g.leaves > 0, egui::Checkbox::new(&mut eyes, "Eyes in the leaves")).on_hover_text("Each notch runs on as a narrow slit ending in a round eye. A single leaf can differ (select it).").changed() { g.eyes = if eyes { Some(2) } else { None }; }
+        let mut clad = g.vine_leaf == Some(true);
+        if ui.checkbox(&mut clad, "Vine acanthus leaves").on_hover_text("Clad the scroll and its shoots in the scroll vine's acanthus leaf (broad belly, two fingers a lobe) instead of the usual leaf. Library leaves and buds keep their own shapes.").changed() { g.vine_leaf = if clad { Some(true) } else { None }; }
         let mut two = g.levels == 2; if ui.checkbox(&mut two, "Three accent shoots (spiral)").changed() { g.levels = if two { 2 } else { 1 }; }
         let mut companion = g.sweeps == Some(2); if ui.checkbox(&mut companion, "Supporting sweep").changed() { g.sweeps = Some(if companion { 2 } else { 1 }); }
         let mut sec = g.secondary_scale.unwrap_or(1.0); if ui.add(egui::Slider::new(&mut sec, 0.5..=2.0).text("Shoot size")).changed() { g.secondary_scale = Some(sec); }
@@ -625,7 +671,6 @@ impl App {
             ui.selectable_value(&mut g.side, Side::Alternate, "Alternate"); ui.selectable_value(&mut g.side, Side::Left, "Left"); ui.selectable_value(&mut g.side, Side::Right, "Right");
         });
         if g != before { self.set_settings(g); }
-        self.page_section(ui);
     }
 
     /// Page size, carving surface and export options.
@@ -696,8 +741,18 @@ impl App {
             });
         }
         ui.label(egui::RichText::new("Builds linked scrolls on your page. It replaces the current design; Undo brings it back. Every backbone stays editable.").small().color(t.dim));
+        // dress the whole construction in the vine's acanthus leaf (now and for the next ones built)
+        let mut clad = self.skel_vine_leaf;
+        if ui.checkbox(&mut clad, "Clad in the vine acanthus").on_hover_text("Every scroll of the construction wears the scroll vine's acanthus leaf instead of the usual leaf. Each backbone can still be changed under Backbone.").changed() {
+            self.skel_vine_leaf = clad;
+            let mut next = self.layout.clone();
+            while next.growth.len() < next.curves.len() { let g0 = next.growth_for(next.growth.len()); next.growth.push(g0); }
+            for g in next.growth.iter_mut().filter(|g| g.vine.is_none()) { g.vine_leaf = if clad { Some(true) } else { None }; }
+            self.commit(next);
+        }
         if let Some((kind, seed)) = build {
             let mut next = skeleton_layout(kind, seed, self.layout.width, self.layout.height);
+            if self.skel_vine_leaf { for g in next.growth.iter_mut().filter(|g| g.vine.is_none()) { g.vine_leaf = Some(true); } }
             next.print_backbone = self.layout.print_backbone;
             self.commit(next);
             self.skeleton = Some(kind); self.skel_seed = seed;
@@ -756,6 +811,10 @@ impl App {
             if ui.add(egui::Slider::new(&mut follow, 0.0..=100.0).text("Follow stem %").fixed_decimals(0)).on_hover_text("Bend the leaf along the stem it grows from, round the volute. It bends only as far as it fits.").changed() { self.patch_shoot(|e| e.params.follow = if follow > 0.0 { Some(follow / 100.0) } else { None }); }
         } else {
             let mut curl = sh.curl; if ui.add(egui::Slider::new(&mut curl, 0.2..=1.2).text("Curl")).changed() { self.patch_shoot(|e| e.params.curl = curl); }
+            // a generated leaf's eyes follow its backbone unless set here
+            let follows = self.settings().eyes.unwrap_or(0);
+            let mut eyes = sh.eyes.unwrap_or(follows) > 0;
+            if ui.checkbox(&mut eyes, "Eyes").on_hover_text("Slits ending in round eyes at this leaf's notches. Untouched leaves follow the backbone's Eyes setting.").changed() { self.patch_shoot(|e| e.params.eyes = Some(if eyes { 2 } else { 0 })); }
         }
         if !bud {
             ui.horizontal(|ui| {
@@ -833,6 +892,10 @@ impl App {
 
     fn theme_tab(&mut self, ui: &mut egui::Ui) {
         let t = self.t();
+        section(ui, t, "Layout");
+        let mut shelf = self.prefs.shelf;
+        segmented(ui, t, &[(true, "ZBrush shelves"), (false, "Classic panels")], &mut shelf);
+        if shelf != self.prefs.shelf { self.set_prefs(Prefs { shelf, ..self.prefs }); }
         section(ui, t, "Theme");
         for id in ThemeId::ALL {
             let th = id.theme();
@@ -956,9 +1019,16 @@ impl App {
                 painter.extend(Shape::dashed_line(&pts, Stroke::new(w, guide), 6.0, 5.0));
             }
             let c = self.layout.curves[self.backbone];
-            painter.extend(Shape::dashed_line(&[self.to_screen(c[0]), self.to_screen(c[1])], Stroke::new(1.0, guide), 3.0, 3.0));
-            painter.extend(Shape::dashed_line(&[self.to_screen(c[2]), self.to_screen(c[3])], Stroke::new(1.0, guide), 3.0, 3.0));
-            for (i, p) in c.iter().enumerate() { painter.circle(self.to_screen(*p), 5.5, if i == 0 || i == 3 { mark } else { sheet }, Stroke::new(1.5, mark)); }
+            // themes with a highlight draw the selected backbone solid in it
+            let hl = self.t().highlight;
+            if let Some(h) = hl {
+                let pts: Vec<Pos2> = (0..=80).map(|k| self.to_screen(scroll_core::geometry::at(&c, k as f64 / 80.0))).collect();
+                painter.add(Shape::line(pts, Stroke::new(2.0, h)));
+            }
+            let (arm, ring) = match hl { Some(h) => (Stroke::new(1.2, h), h), None => (Stroke::new(1.0, guide), mark) };
+            painter.extend(Shape::dashed_line(&[self.to_screen(c[0]), self.to_screen(c[1])], arm, 3.0, 3.0));
+            painter.extend(Shape::dashed_line(&[self.to_screen(c[2]), self.to_screen(c[3])], arm, 3.0, 3.0));
+            for (i, p) in c.iter().enumerate() { painter.circle(self.to_screen(*p), 5.5, if i == 0 || i == 3 { ring } else { sheet }, Stroke::new(1.5, ring)); }
         }
         // selected leaf handles
         let mut handles: Option<(Pos2, Pos2)> = None;
@@ -984,6 +1054,25 @@ impl App {
         }
         // pen trace
         if let Some(Drag::Draw { points }) = &self.drag { painter.add(Shape::line(points.iter().map(|p| self.to_screen(*p)).collect(), Stroke::new(2.0, c.mark))); }
+        // held pick keys: B backbones, L leaves, C collars; what a click would
+        // take is outlined under the pointer
+        let pick = self.pick_mode(ui, &resp);
+        if let (Some(mode), Some(hover)) = (pick, resp.hover_pos()) {
+            let mm = self.to_mm(hover);
+            let hl = self.t().highlight.unwrap_or(mark);
+            let outline = |poly: &[Point]| Shape::closed_line(poly.iter().map(|p| self.to_screen(*p)).collect(), Stroke::new(stroke_w * 2.2, with_alpha(hl, 150)));
+            match mode {
+                Pick::Backbone => if let Some(b) = self.hit_backbone(mm, hover) {
+                    let pts: Vec<Pos2> = (0..=80).map(|k| self.to_screen(scroll_core::geometry::at(&self.layout.curves[b], k as f64 / 80.0))).collect();
+                    painter.add(Shape::line(pts, Stroke::new(4.0, with_alpha(hl, 170))));
+                    let pre = format!("backbone-{b}/");
+                    for p in self.grown.parts.iter().filter(|p| p.parent.is_none() && (!self.multi() || p.id.starts_with(&pre))) { painter.add(outline(&p.polygon)); }
+                },
+                Pick::Leaf => if let Some(id) = self.hit_leaf(mm) { if let Some(p) = self.grown.parts.iter().find(|p| p.id == id) { painter.add(outline(&p.polygon)); } },
+                Pick::Collar => for p in self.grown.parts.iter().filter(|p| is_collar(p) && inside(mm, &p.polygon)) { painter.add(outline(&p.polygon)); },
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
 
         // ----- interaction -----
         let pointer = resp.interact_pointer_pos();
@@ -1044,8 +1133,37 @@ impl App {
             if self.smooth_due { self.stale = true; }
         }
         if resp.clicked() && self.tool == Tool::Select {
-            if let Some(pos) = pointer { let mm = self.to_mm(pos); self.selected = self.hit_leaf(mm); }
+            if let Some(pos) = pointer {
+                let mm = self.to_mm(pos);
+                match pick {
+                    Some(Pick::Backbone) => if let Some(b) = self.hit_backbone(mm, pos) { self.pick_backbone(b, None); },
+                    Some(Pick::Collar) => if let Some(b) = self.grown.parts.iter().rev().find(|p| is_collar(p) && inside(mm, &p.polygon)).map(|p| self.split_id(&p.id).0) {
+                        self.pick_backbone(b, Some(format!("Collar at the fork of backbone {}: its style and size are under Backbone → Collar at the fork.", b + 1)));
+                    },
+                    Some(Pick::Leaf) => self.selected = self.hit_leaf(mm),
+                    // a plain click takes a leaf, else the backbone under it
+                    None => { self.selected = self.hit_leaf(mm); if self.selected.is_none() { if let Some(b) = self.hit_backbone(mm, pos) { self.pick_backbone(b, None); } } }
+                }
+            }
         }
+    }
+
+    /// Which pick key is held while the pointer is over the canvas.
+    fn pick_mode(&self, ui: &egui::Ui, resp: &egui::Response) -> Option<Pick> {
+        if !resp.hovered() || ui.ctx().wants_keyboard_input() || self.tool != Tool::Select { return None; }
+        ui.input(|i| if i.key_down(egui::Key::B) { Some(Pick::Backbone) } else if i.key_down(egui::Key::L) { Some(Pick::Leaf) } else if i.key_down(egui::Key::C) { Some(Pick::Collar) } else { None })
+    }
+    /// The backbone under the pointer: the topmost part there (any of a
+    /// backbone's leaves counts), else a backbone line within a few pixels.
+    fn hit_backbone(&self, mm: Point, screen: Pos2) -> Option<usize> {
+        if let Some(p) = self.grown.parts.iter().rev().find(|p| inside(mm, &p.polygon)) { return Some(if self.multi() { self.split_id(&p.id).0 } else { 0 }).filter(|&b| b < self.layout.curves.len()); }
+        self.layout.curves.iter().enumerate().map(|(i, c)| (i, (0..=80).map(|k| self.to_screen(scroll_core::geometry::at(c, k as f64 / 80.0)).distance(screen)).fold(f32::INFINITY, f32::min)))
+            .filter(|(_, d)| *d < 8.0).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|(i, _)| i)
+    }
+    fn pick_backbone(&mut self, b: usize, message: Option<String>) {
+        self.backbone = b; self.selected = None;
+        self.palettes[shelf::BACKBONE] = true;
+        self.message = message.unwrap_or_else(|| format!("Backbone {} selected.", b + 1));
     }
 
     /// What a drag in the Select tool grabs, in priority order.
@@ -1100,7 +1218,8 @@ fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, t: &Theme, options: &[(T, &
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::click());
                 let sel = *value == *v;
                 ui.painter().rect_filled(rect, 6.0, if sel { t.accent } else if resp.hovered() { t.hover } else { Color32::TRANSPARENT });
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, if sel { egui::FontFamily::Name("semibold".into()) } else { egui::FontFamily::Proportional }), if sel || resp.hovered() { t.text } else { t.dim });
+                let fg = if sel { t.on_accent } else if resp.hovered() { t.text } else { t.dim };
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, if sel { egui::FontFamily::Name("semibold".into()) } else { egui::FontFamily::Proportional }), fg);
                 if resp.clicked() { *value = *v; }
             }
         });
@@ -1166,6 +1285,8 @@ fn library_card(ui: &mut egui::Ui, t: &Theme, id: &str, name: &str, detail: &str
 
 /// Small, dim, upper-case section label.
 fn section(ui: &mut egui::Ui, t: &Theme, title: &str) {
+    // inside a shelf palette of the same name the label would only repeat its header
+    if ui.data(|d| d.get_temp::<String>(egui::Id::new(shelf::PALETTE_TITLE))).is_some_and(|p| p == title.to_uppercase()) { ui.add_space(4.0); return; }
     ui.add_space(12.0);
     ui.label(egui::RichText::new(title.to_uppercase()).family(egui::FontFamily::Name("semibold".into())).size(11.5).color(t.dim));
     ui.add_space(1.0);
@@ -1178,7 +1299,7 @@ fn tool_button(ui: &mut egui::Ui, t: &Theme, selected: bool, tip: &str, icon: fn
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
     let fill = if selected { t.accent } else if resp.hovered() { t.hover } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, 8.0, fill);
-    icon(ui.painter(), rect.shrink(11.0), if selected || resp.hovered() { t.text } else { t.dim });
+    icon(ui.painter(), rect.shrink(11.0), if selected { t.on_accent } else if resp.hovered() { t.text } else { t.dim });
     resp.on_hover_text(tip).clicked()
 }
 

@@ -1,5 +1,5 @@
 //! Collars: leafage over each fork of an attached backbone when asked for,
-//! in both styles, drawn on top, near the fork, with clean outlines.
+//! in every style, drawn on top, near the fork, with clean outlines.
 use scroll_core::collar::CollarStyle;
 use scroll_core::geometry::distance;
 use scroll_core::skeleton::{skeleton_layout, Skeleton};
@@ -11,7 +11,7 @@ fn collars_sit_over_each_fork_on_top() {
         let attached: Vec<usize> = (0..l.curves.len()).filter(|&i| l.growth_for(i).attach.is_some()).collect();
         for &i in &attached { l.growth[i].collar = Some(1.0); l.growth[i].collar_style = Some(style.id().into()); }
         let g = l.grow();
-        let per = if style == CollarStyle::Split { 2 } else { 1 };
+        let per = if matches!(style, CollarStyle::Split | CollarStyle::Pair) { 2 } else { 1 };
         let collars: Vec<_> = g.parts.iter().filter(|p| p.id.contains("/collar")).collect();
         assert_eq!(collars.len(), attached.len() * per, "{style:?} {kind:?} {seed}");
         assert!(g.parts.iter().rev().take(collars.len()).all(|p| p.id.contains("/collar")), "collars are drawn on top");

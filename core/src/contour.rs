@@ -49,16 +49,19 @@ pub fn root_flare(parent: &[Point], root: Point, child_width: f64) -> f64 {
     0.5f64.max(nearest.min(child_width * 0.32).min(3.2))
 }
 
-pub struct Anatomy { pub polygon: Vec<Point>, pub folds: Vec<Vec<Point>>, pub ridges: Vec<Vec<Point>> }
+/// `cuts` are eyes (closed loops) and slits, drawn as outline.
+pub struct Anatomy { pub polygon: Vec<Point>, pub folds: Vec<Vec<Point>>, pub ridges: Vec<Vec<Point>>, pub cuts: Vec<Vec<Point>> }
 
 /// All options of the contour; `new` gives the web version's defaults.
 #[derive(Clone, Debug)]
 pub struct ContourOptions {
     pub start: f64, pub belly: f64, pub lobed: bool, pub root_width: f64, pub stalk: f64,
     pub notches: Vec<Notch>, pub taper: f64, pub ends: Option<Ends>,
+    /// Eyes at the notches: 0 none, 1 round, 2 slit and eye, 3 teardrop.
+    pub eyes: u8,
 }
 impl Default for ContourOptions {
-    fn default() -> Self { ContourOptions { start: 0.0, belly: 0.0, lobed: true, root_width: 0.0, stalk: 0.0, notches: leaf_notches(), taper: 0.42, ends: None } }
+    fn default() -> Self { ContourOptions { start: 0.0, belly: 0.0, lobed: true, root_width: 0.0, stalk: 0.0, notches: leaf_notches(), taper: 0.42, ends: None, eyes: 0 } }
 }
 
 fn smooth(x: f64) -> f64 { let c = x.clamp(0.0, 1.0); c * c * (3.0 - 2.0 * c) }
@@ -112,7 +115,7 @@ pub fn acanthus_contour(spine: &[Point], stem_width: f64, side: f64, leaf_width:
     polygon.extend(cap(outer[240], inner[0], 1.0, 1.0));
     polygon.extend(inner.iter().copied());
     polygon.extend(cap(*inner.last().unwrap(), outer[0], 0.0, -1.0));
-    if !o.lobed { return Anatomy { polygon, folds: vec![], ridges: vec![] }; }
+    if !o.lobed { return Anatomy { polygon, folds: vec![], ridges: vec![], cuts: vec![] }; }
     let clip = |line: Vec<Point>, minimum: usize| -> Vec<Vec<Point>> {
         let mut runs: Vec<Vec<Point>> = vec![]; let mut run: Vec<Point> = vec![];
         for p in line { if inside(p, &polygon) { run.push(p); } else { if !run.is_empty() { runs.push(std::mem::take(&mut run)); } } }
@@ -133,5 +136,42 @@ pub fn acanthus_contour(spine: &[Point], stem_width: f64, side: f64, leaf_width:
         folds.extend(clip(line, 24));
     }
     let ridges = clip(rib, 30);
-    Anatomy { polygon, folds, ridges }
+    // eyes: where a notch bites in, a small eye is drilled at its inner end
+    let mut cuts = vec![];
+    if o.eyes > 0 {
+        let ring = |c: Point, rx: f64, ry: f64, ang: f64| -> Vec<Point> { (0..=28).map(|k| { let a = k as f64 / 28.0 * 2.0 * PI; let (x, y) = (rx * a.cos(), ry * a.sin()); pt(c.x + x * ang.cos() - y * ang.sin(), c.y + x * ang.sin() + y * ang.cos()) }).collect() };
+        for n in &o.notches {
+            let t = t_of(n.at);
+            let full = body(n.at) * limit(t); // the leaf's reach there, before the notch
+            let edge = half_width(n.at);
+            let r = (full * 0.2).clamp(0.6, 3.0);
+            let floor = base(t) + r * 1.3; // keep the eye off the midrib
+            let ang = frame(t).1;
+            match o.eyes {
+                1 => { let w = (edge - r * 1.4).max(floor); cuts.push(ring(map(t, w), r, r, ang)); }
+                2 => {
+                    // the notch runs on as a narrow slit, ending in the eye
+                    let w = (edge - full * 0.42).max(floor);
+                    let c = map(t_of((n.at + 0.008).min(1.0)), w);
+                    let top = map(t_of((n.at + 0.008).min(1.0)), w + r * 0.8);
+                    cuts.push(vec![map(t, edge), top]);
+                    cuts.push(ring(c, r * 0.8, r * 0.8, ang));
+                }
+                _ => {
+                    // a teardrop pointing out at the notch
+                    let tip = map(t, edge - r * 0.3);
+                    let w = (edge - r * 2.8).max(floor);
+                    let c = map(t_of((n.at + 0.01).min(1.0)), w);
+                    let d = (tip.y - c.y).atan2(tip.x - c.x); let rr = r * 1.05;
+                    let mut drop = vec![tip];
+                    for k in 0..=24 { let a = d + 0.45 * PI + k as f64 / 24.0 * 1.1 * PI; drop.push(pt(c.x + rr * a.cos(), c.y + rr * a.sin())); }
+                    drop.push(tip);
+                    cuts.push(drop);
+                }
+            }
+        }
+        // only eyes that sit wholly inside the leaf
+        cuts.retain(|c| c.iter().all(|p| inside(*p, &polygon)) || c.len() == 2);
+    }
+    Anatomy { polygon, folds, ridges, cuts }
 }

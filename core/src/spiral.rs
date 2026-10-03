@@ -92,10 +92,10 @@ pub fn spiral_anatomy(page: &Page, s: &GrowthSettings) -> GrowthResult {
         let collar = attached.then_some(s.collar).flatten().filter(|c| c.is_finite() && *c > 0.0);
         let root_width = match (attached, collar) { (true, Some(c)) => 2.6 * c.clamp(0.6, 1.6), (true, None) => 2f64.min(width * 0.45) * 0.9, _ if is_main => 0.0, _ => root_flare(&parts[0].polygon, points[0], leaf_width) };
         let attached_start = if collar.is_some() { MAIN_ENDS.start } else { 0.9 };
-        let o = ContourOptions { start: if is_main { guide_length / length * GOLDEN_SMALL } else { 0.0 }, belly: if is_main { GOLDEN_SMALL } else { 0.0 }, lobed: s.leaves > 0, root_width, stalk: if is_main { 0.0 } else { shoot_stalk() }, ends: if attached { Some(Ends { start: attached_start, tip: MAIN_ENDS.tip }) } else if is_main { Some(MAIN_ENDS) } else { None }, ..ContourOptions::default() };
+        let o = ContourOptions { start: if is_main { guide_length / length * GOLDEN_SMALL } else { 0.0 }, belly: if is_main { GOLDEN_SMALL } else { 0.0 }, lobed: s.leaves > 0, root_width, stalk: if is_main { 0.0 } else { shoot_stalk() }, ends: if attached { Some(Ends { start: attached_start, tip: MAIN_ENDS.tip }) } else if is_main { Some(MAIN_ENDS) } else { None }, eyes: s.eyes.unwrap_or(0), ..ContourOptions::default() };
         let a = acanthus_contour(&points, 2f64.min(width * 0.45), side, leaf_width, &o);
         let p = &mut parts[idx];
-        p.polygon = a.polygon; p.folds = a.folds; p.ridges = Some(a.ridges); p.contour_split = Some(241);
+        p.polygon = a.polygon; p.folds = a.folds; p.ridges = Some(a.ridges); p.cuts = a.cuts; p.contour_split = Some(241);
         if let Some(sh) = p.shoot.as_mut() { sh.stem = Some(2f64.min(width * 0.45)); sh.leaf_side = Some(side); }
     }
     let accents = parts.iter().filter(|p| p.kind == Kind::Secondary).count();

@@ -744,7 +744,8 @@ impl App {
         else if handles.iter().any(|(_, p, _)| hover.is_some_and(|h| h.distance(*p) < 10.0)) { ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair); }
         else if over_chip { ui.ctx().set_cursor_icon(egui::CursorIcon::Move); }
 
-        // a small toggle tucked in the canvas corner
+        // a small toggle tucked in the canvas corner (the shelf layout has its own Flat / Lit switch)
+        if self.prefs.shelf { return; }
         let at = Rect::from_min_size(rect.left_bottom() + Vec2::new(12.0, -36.0), Vec2::new(96.0, 24.0));
         let button = egui::Button::new(egui::RichText::new("Lit preview").small()).selected(lit);
         if ui.put(at, button).on_hover_text("Raking light from the upper left, as the cut wood would look (also in View)").clicked() { self.set_prefs(Prefs { chip_lit: !lit, ..self.prefs }); }
@@ -833,4 +834,227 @@ fn triangulate(poly: &[Point]) -> Vec<[usize; 3]> {
     if idx.len() == 3 { out.push([idx[0], idx[1], idx[2]]); }
     else if idx.len() > 3 { for k in 1..idx.len() - 1 { out.push([idx[0], idx[k], idx[k + 1]]); } } // degenerate leftovers: fan
     out
+}
+
+// ---- the shelf layout (ZBrush-style) for the Chip workspace ------------------
+
+use crate::shelf::{self as sh, bevel_button, big_tab, caption, divider, seg, shelf_caption, stepper, tile, zslider};
+
+impl App {
+    /// Select / Fill tools and the fill shape, the composition's main
+    /// controls, the Flat / Lit view and Box / Export.
+    pub(crate) fn chip_shelf_context(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        egui::TopBottomPanel::top("chip-shelf").exact_height(58.0).frame(egui::Frame::none().fill(t.panel).inner_margin(egui::Margin::symmetric(10.0, 0.0)).stroke(Stroke::new(1.0, t.border))).show(ctx, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let boxed = self.chip.boxd.is_some();
+                let export = big_tab(ui, t, "Export", false).on_hover_text("Save at actual size as SVG");
+                let popup = ui.id().with("chip-export-menu");
+                if export.clicked() { ui.memory_mut(|m| m.toggle_popup(popup)); }
+                egui::popup_below_widget(ui, popup, &export, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                    ui.set_min_width(220.0);
+                    if ui.button(if boxed { "This panel SVG…" } else { "Chip SVG…" }).clicked() { self.chip.export(); }
+                    if boxed && ui.button("All panels on one sheet…").clicked() { self.chip.export_sheet(); }
+                });
+                let box_open = self.palettes[sh::CHIP_BOX];
+                if big_tab(ui, t, "Box", boxed || box_open).on_hover_text("Make this pattern one face of a carved box, or edit the box").clicked() { self.palettes[sh::CHIP_BOX] = !box_open; }
+                ui.add_space(8.0); divider(ui, t); ui.add_space(8.0);
+                ui.allocate_ui_with_layout(Vec2::new(124.0, 50.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.add_space(3.0);
+                    ui.label(egui::RichText::new("VIEW").size(10.5).color(t.dim));
+                    let mut lit = self.prefs.chip_lit;
+                    if seg(ui, t, &[(false, "Flat"), (true, "Lit")], &mut lit, 58.0, 22.0) { self.set_prefs(Prefs { chip_lit: lit, ..self.prefs }); }
+                });
+                ui.add_space(4.0); divider(ui, t); ui.add_space(8.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let filling = self.chip.lasso.is_some();
+                    if bevel_button(ui, t, "Select", !filling, Vec2::new(66.0, 38.0)).on_hover_text("Click a chip to select it; drag chips and handles (edits snap to the grid)").clicked() && filling { self.chip.lasso = None; self.chip.drag = None; }
+                    if bevel_button(ui, t, "Fill", filling, Vec2::new(56.0, 38.0)).on_hover_text("Fill an area  (L)\nDraw an outline; it fills with a repeat, clear of the chips already there").clicked() { self.chip.toggle_lasso(); }
+                    if filling {
+                        ui.add_space(4.0);
+                        let mut shape = self.chip.fill_shape;
+                        if seg(ui, t, &[(FillShape::Lasso, "Lasso"), (FillShape::Polygon, "Polygon"), (FillShape::Regular, "Regular")], &mut shape, 64.0, 30.0) { self.chip.fill_shape = shape; self.chip.lasso = None; self.chip.toggle_lasso(); }
+                    }
+                    ui.add_space(8.0); divider(ui, t); ui.add_space(8.0);
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    sh::tight_controls(ui, |ui| self.chip_context_controls(ui));
+                });
+            });
+        });
+    }
+
+    fn chip_context_controls(&mut self, ui: &mut egui::Ui) {
+        let t = self.t();
+        let s = self.chip.settings.clone();
+        caption(ui, t, "Composition");
+        if let Some(f) = s.faceted {
+            let step = stepper(ui, t, "Variation", s.seed());
+            if step != 0 {
+                // step until the permutation actually changes, as Generate variation does
+                let mut seed = s.seed();
+                let next = loop { seed = if step > 0 { seed.wrapping_add(1) } else { seed.wrapping_sub(1) }; let p = Faceted::from_seed(seed); if p != f { break p; } };
+                self.chip.change(ChipSettings { seed: Some(seed), faceted: Some(next), ..s.regenerated() }); self.chip.selected = None;
+                return;
+            }
+            let mut n = f;
+            if n.field.is_none() {
+                let k = stepper(ui, t, n.centre.count_label(), n.count);
+                if k != 0 { let r = n.centre.counts(); n.count = (n.count as i64 + k as i64).clamp(*r.start() as i64, *r.end() as i64) as u32; }
+            }
+            let mut pct = n.scale * 100.0;
+            let label = if n.field.is_some() { "Cell size" } else { "Centre size" };
+            if zslider(ui, t, label, &mut pct, 40.0, 100.0, |v| format!("{v:.0}%"), 160.0).on_hover_text("Smaller leaves room round the centre for a fill").changed() { n.scale = (pct / 100.0).clamp(0.4, 1.0); }
+            if n != f { self.chip.change(ChipSettings { faceted: Some(n), removed: vec![], edits: Default::default(), ..s.clone() }); self.chip.selected = None; }
+        } else {
+            let step = stepper(ui, t, "Variation", s.seed());
+            if step != 0 { let seed = if step > 0 { s.seed().wrapping_add(1) } else { s.seed().wrapping_sub(1) }; self.chip.change(ChipSettings { seed: Some(seed), ..s.regenerated() }); self.chip.selected = None; return; }
+            if bevel_button(ui, t, "Vary border", false, Vec2::new(104.0, 30.0)).on_hover_text("Keeps the centre and changes only the border").clicked() { self.chip.change(ChipSettings { border_seed: Some(s.border_seed().wrapping_add(1)), ..s.regenerated() }); self.chip.selected = None; }
+        }
+    }
+
+    /// The composition shelf: the centre (or field) and the border, as tiles.
+    pub(crate) fn chip_shelf_tools(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        egui::SidePanel::left("chip-shelf-tools").exact_width(84.0).resizable(false).frame(egui::Frame::none().fill(t.panel).inner_margin(egui::Margin::symmetric(8.0, 10.0)).stroke(Stroke::new(1.0, t.border))).show(ctx, |ui| {
+            egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let s = self.chip.settings.clone();
+                let Some(f) = s.faceted else {
+                    shelf_caption(ui, t, "CLASSIC");
+                    let fams: [(ChipFamily, &str, fn(&egui::Painter, Rect, Color32)); 3] = [(ChipFamily::Star, "Star", icon_centre_star), (ChipFamily::Rosette, "Rosette", icon_centre_petals), (ChipFamily::Border, "Border", icon_border_zigzag)];
+                    for (fam, name, icon) in fams {
+                        if tile(ui, t, name, icon, s.family == fam).on_hover_text(fam.label()).clicked() && s.family != fam { self.chip.change(ChipSettings { family: fam, ..s.regenerated() }); self.chip.selected = None; }
+                    }
+                    rule(ui, t);
+                    if tile(ui, t, "Faceted", icon_centre_star, false).on_hover_text("Switch to the faceted engine").clicked() { self.chip.change(ChipSettings { faceted: Some(Faceted::from_seed(s.seed())), ..s.regenerated() }); self.chip.selected = None; }
+                    return;
+                };
+                shelf_caption(ui, t, "CENTRE");
+                let centres: [(Centre, &str, fn(&egui::Painter, Rect, Color32)); 4] = [(Centre::Star, "Star", icon_centre_star), (Centre::Petals, "Petals", icon_centre_petals), (Centre::Fan, "Fan", icon_centre_fan), (Centre::Swirl, "Swirl", icon_centre_swirl)];
+                let mut n = f;
+                for (c, name, icon) in centres {
+                    if tile(ui, t, name, icon, f.field.is_none() && f.centre == c).on_hover_text(c.label()).clicked() { n.field = None; if n.centre != c { n.centre = c; n.count = c.default_count(); } }
+                }
+                if tile(ui, t, "Field", icon_field, f.field.is_some()).on_hover_text("A field of a repeat filling the inside of the border, as on box sides").clicked() && f.field.is_none() { n.field = Some(Repeat::StarsAndDiamonds); }
+                rule(ui, t);
+                shelf_caption(ui, t, "BORDER");
+                let borders: [(Option<BorderStyle>, &str, fn(&egui::Painter, Rect, Color32)); 4] = [(None, "None", icon_border_none), (Some(BorderStyle::Zigzag), "Zigzag", icon_border_zigzag), (Some(BorderStyle::Arcade), "Arcade", icon_border_arcade), (Some(BorderStyle::Almond), "Almond", icon_border_almond)];
+                for (b, name, icon) in borders {
+                    if tile(ui, t, name, icon, f.border == b).on_hover_text(b.map_or("No border", |b| b.label())).clicked() { n.border = b; }
+                }
+                if n != f { self.chip.change(ChipSettings { faceted: Some(n), removed: vec![], edits: Default::default(), ..s.clone() }); self.chip.selected = None; }
+            });
+        });
+    }
+
+    /// Folding palettes: the Chip panel's sections, one per palette.
+    pub(crate) fn chip_shelf_tray(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        egui::SidePanel::right("chip-shelf-tray").default_width(340.0).min_width(300.0).frame(egui::Frame::none().fill(t.bg).inner_margin(egui::Margin { left: 8.0, right: 6.0, top: 8.0, bottom: 8.0 })).show(ctx, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_width(ui.available_width() - 6.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+                if self.chip.boxd.is_some() || self.palettes[sh::CHIP_BOX] { self.palette(ui, sh::CHIP_BOX, "Box", |s, ui| s.chip_box(ui)); }
+                self.palette(ui, sh::CHIP_COMPOSE, "Composition", |s, ui| {
+                    let st = s.chip.settings.clone();
+                    let mut faceted = st.faceted.is_some();
+                    segmented(ui, s.t(), &[(true, "Faceted"), (false, "Classic")], &mut faceted);
+                    if faceted != st.faceted.is_some() {
+                        let f = if faceted { Some(Faceted::from_seed(st.seed())) } else { None };
+                        s.chip.change(ChipSettings { faceted: f, ..st.regenerated() }); s.chip.selected = None;
+                    } else if let Some(f) = st.faceted { s.faceted_controls(ui, &st, f); } else { s.classic_controls(ui, &st); }
+                });
+                self.palette(ui, sh::CHIP_FILL, "Fill an area", |s, ui| s.chip_fills(ui));
+                self.palette(ui, sh::CHIP_PAGE, "Page", |s, ui| s.chip_page_and_edit(ui));
+                self.palette(ui, sh::CHIP_PRESETS, "Presets", |s, ui| s.chip_presets(ui));
+                self.palette(ui, sh::CANVAS, "Canvas", |s, ui| s.theme_tab(ui));
+            });
+        });
+    }
+
+    pub(crate) fn chip_shelf_status(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        egui::TopBottomPanel::bottom("chip-shelf-status").exact_height(28.0).frame(egui::Frame::none().fill(t.bg).inner_margin(egui::Margin::symmetric(14.0, 0.0))).show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if sh::small_button(ui, t, "Fit").on_hover_text("Fit the page in the window").clicked() { self.chip.fit_page(); }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let c = &self.chip;
+                        let s = |x: String| egui::RichText::new(x).size(12.5).color(t.dim);
+                        ui.label(s(format!("{} × {} mm", c.settings.width(), c.settings.page_height()))); ui.add_space(12.0);
+                        ui.label(s(format!("{} mm grid · {} chips", c.settings.step(), c.chip_count()))); ui.add_space(12.0);
+                        if let Some(m) = c.cursor_mm { ui.label(s(format!("x {:.1}  y {:.1} mm", m.x, m.y))); ui.add_space(12.0); }
+                        let hint = match c.selected { None => "Click a chip to select it. Drag chips and handles; edits snap to the grid.".to_string(), Some(i) => format!("Chip {} selected · drag it or its handles · Delete removes it", i + 1) };
+                        ui.add(egui::Label::new(s(if c.message.is_empty() { hint } else { c.message.clone() })).truncate());
+                    });
+                });
+            });
+        });
+    }
+}
+
+fn rule(ui: &mut egui::Ui, t: &Theme) {
+    ui.add_space(2.0);
+    let r = ui.available_rect_before_wrap();
+    ui.painter().hline(r.left() + 6.0..=r.right() - 6.0, r.top(), Stroke::new(1.0, t.border));
+    ui.add_space(8.0);
+}
+
+// shelf icons, drawn in a unit box
+fn polar(r: Rect, a: f32, k: f32) -> Pos2 { let c = r.center(); Pos2::new(c.x + a.cos() * k * r.width() * 0.5, c.y + a.sin() * k * r.height() * 0.5) }
+fn icon_centre_star(p: &egui::Painter, r: Rect, c: Color32) {
+    let n = 8; let pts: Vec<Pos2> = (0..n * 2).map(|i| polar(r, i as f32 * std::f32::consts::PI / n as f32 - 1.5708, if i % 2 == 0 { 1.0 } else { 0.45 })).collect();
+    p.add(Shape::closed_line(pts.clone(), Stroke::new(1.4, c)));
+    for i in (0..n * 2).step_by(2) { p.line_segment([r.center(), pts[i]], Stroke::new(0.8, c)); }
+}
+fn icon_centre_petals(p: &egui::Painter, r: Rect, c: Color32) {
+    for k in 0..6 {
+        let a = k as f32 * std::f32::consts::TAU / 6.0; let tip = polar(r, a, 1.0); let n = Vec2::new(-a.sin(), a.cos()) * r.width() * 0.13;
+        let one: Vec<Pos2> = (0..=12).map(|i| { let s = i as f32 / 12.0; r.center() + (tip - r.center()) * s + n * (std::f32::consts::PI * s).sin() }).collect();
+        let two: Vec<Pos2> = (0..=12).rev().map(|i| { let s = i as f32 / 12.0; r.center() + (tip - r.center()) * s - n * (std::f32::consts::PI * s).sin() }).collect();
+        p.add(Shape::closed_line(one.into_iter().chain(two).collect(), Stroke::new(1.2, c)));
+    }
+}
+fn icon_centre_fan(p: &egui::Painter, r: Rect, c: Color32) {
+    p.circle_stroke(r.center(), r.width() * 0.5, Stroke::new(1.3, c)); p.circle_stroke(r.center(), r.width() * 0.22, Stroke::new(1.1, c));
+    for k in 0..12 { let a = k as f32 * std::f32::consts::TAU / 12.0; p.line_segment([polar(r, a, 0.44), polar(r, a, 1.0)], Stroke::new(0.9, c)); }
+}
+fn icon_centre_swirl(p: &egui::Painter, r: Rect, c: Color32) {
+    for k in 0..6 { let a0 = k as f32 * std::f32::consts::TAU / 6.0; p.add(Shape::line((0..=16).map(|i| { let s = i as f32 / 16.0; polar(r, a0 + s * 1.6, 0.15 + s * 0.85) }).collect(), Stroke::new(1.3, c))); }
+    p.circle_stroke(r.center(), r.width() * 0.5, Stroke::new(1.0, c));
+}
+fn icon_field(p: &egui::Painter, r: Rect, c: Color32) {
+    for i in 0..3 { for j in 0..3 {
+        let q = Rect::from_min_size(r.min + Vec2::new(i as f32, j as f32) * r.width() / 3.0, Vec2::splat(r.width() / 3.0)).shrink(2.0);
+        p.add(Shape::closed_line(vec![Pos2::new(q.center().x, q.top()), Pos2::new(q.right(), q.center().y), Pos2::new(q.center().x, q.bottom()), Pos2::new(q.left(), q.center().y)], Stroke::new(1.1, c)));
+    } }
+}
+fn icon_border_none(p: &egui::Painter, r: Rect, c: Color32) {
+    p.rect_stroke(r.shrink(2.0), 1.0, Stroke::new(1.2, c));
+    p.line_segment([r.left_bottom() + Vec2::new(3.0, -3.0), r.right_top() + Vec2::new(-3.0, 3.0)], Stroke::new(1.0, c));
+}
+fn icon_border_zigzag(p: &egui::Painter, r: Rect, c: Color32) {
+    p.rect_stroke(r.shrink(1.0), 1.0, Stroke::new(1.0, c));
+    let pts: Vec<Pos2> = (0..=8).map(|i| Pos2::new(r.left() + 2.0 + i as f32 * (r.width() - 4.0) / 8.0, if i % 2 == 0 { r.top() + 3.0 } else { r.top() + 8.0 })).collect();
+    p.add(Shape::line(pts.clone(), Stroke::new(1.2, c)));
+    p.add(Shape::line(pts.iter().map(|q| Pos2::new(q.x, r.bottom() - (q.y - r.top()))).collect(), Stroke::new(1.2, c)));
+}
+fn icon_border_arcade(p: &egui::Painter, r: Rect, c: Color32) {
+    p.rect_stroke(r.shrink(1.0), 1.0, Stroke::new(1.0, c));
+    for k in 0..4 {
+        let x0 = r.left() + 2.0 + k as f32 * (r.width() - 4.0) / 4.0; let w = (r.width() - 4.0) / 4.0;
+        p.add(Shape::line((0..=10).map(|i| { let s = i as f32 / 10.0; Pos2::new(x0 + s * w, r.top() + 8.0 - (std::f32::consts::PI * s).sin() * 5.0) }).collect(), Stroke::new(1.2, c)));
+    }
+}
+fn icon_border_almond(p: &egui::Painter, r: Rect, c: Color32) {
+    p.rect_stroke(r.shrink(1.0), 1.0, Stroke::new(1.0, c));
+    for k in 0..3 {
+        let x0 = r.left() + 3.0 + k as f32 * (r.width() - 6.0) / 3.0; let w = (r.width() - 6.0) / 3.0; let y = r.top() + 6.0;
+        let top: Vec<Pos2> = (0..=10).map(|i| { let s = i as f32 / 10.0; Pos2::new(x0 + s * w, y - (std::f32::consts::PI * s).sin() * 3.0) }).collect();
+        let bottom: Vec<Pos2> = (0..=10).rev().map(|i| { let s = i as f32 / 10.0; Pos2::new(x0 + s * w, y + (std::f32::consts::PI * s).sin() * 3.0) }).collect();
+        p.add(Shape::closed_line(top.into_iter().chain(bottom).collect(), Stroke::new(1.1, c)));
+    }
 }

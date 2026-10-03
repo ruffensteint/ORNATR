@@ -116,7 +116,10 @@ impl Layout {
         let (vine_edits, others): (Vec<ShootEdit>, Vec<ShootEdit>) = shoots.iter().cloned().partition(|e| e.params.preset.as_deref() == Some(crate::shoots::VINE_CURL));
         match s.vine.filter(|v| v.is_finite() && *v > 0.0) {
             Some(spacing) => grow_vine(self.width, self.height, &self.curves[index], &s, spacing, surface.as_deref(), obstacles, &vine_edits, draft),
-            None => grow_backbone(&GrowInput { width: self.width, height: self.height, curve: self.curves[index], locked, shoots: &others, settings: &s, frame: surface.as_deref() }),
+            None => {
+                let g = grow_backbone(&GrowInput { width: self.width, height: self.height, curve: self.curves[index], locked, shoots: &others, settings: &s, frame: surface.as_deref() });
+                if s.vine_leaf == Some(true) { crate::curls::clad_in_vine_leaf(g, (self.width.min(self.height) / 130.0).clamp(0.4, 3.0)) } else { g }
+            }
         }
     }
     fn grow_settled(&self, draft: bool) -> GrowthResult {
@@ -283,7 +286,9 @@ pub fn grow_vine(width: f64, height: f64, curve: &Curve, s: &GrowthSettings, spa
     let (spec, reach, max_half) = scroll_leaf(); let max_half = max_half * k;
     let key = {
         let mut h: u64 = 0xcbf29ce484222325;
-        let mut eat = |v: f64| { h ^= v.to_bits(); h = h.wrapping_mul(0x100000001b3); };
+        // the shift folds high bits down: without it a sign change touches only
+        // the top bit, and two sign changes (a mirrored curl's side and turn) cancel
+        let mut eat = |v: f64| { h ^= v.to_bits(); h = h.wrapping_mul(0x100000001b3); h ^= h >> 29; };
         for p in curve { eat(p.x); eat(p.y); }
         for p in &surface { eat(p.x); eat(p.y); }
         for o in obstacles { eat(o.len() as f64); for p in o.iter().step_by(7) { eat(p.x); eat(p.y); } }
@@ -294,7 +299,7 @@ pub fn grow_vine(width: f64, height: f64, curve: &Curve, s: &GrowthSettings, spa
     if let Some(hit) = VINES.with(|c| c.borrow().get(&key).cloned()) { return hit; }
     let band = if leaves { max_half * 1.3 } else { stem };
     let res = if edits.is_empty() {
-        let o = ScrollOptions { seed_spacing: spacing, max_length: 260.0 * k, min_length: 45.0 * k, width: band, clearance: 3.0, generations: 2, branch_from: 90.0 * k, fill_gap: 16.0 * k, seed: s.seed };
+        let o = ScrollOptions { seed_spacing: spacing, max_length: 260.0 * k, min_length: 45.0 * k, width: band, clearance: 3.0, generations: 2, branch_from: 90.0 * k, fill_gap: 16.0 * k, seed: s.seed, obstacle_reach: 0.4 };
         grow_scrolls(&path, false, &surface, obstacles, &o)
     } else {
         let list: Vec<(String, crate::shoots::ShootParams, bool)> = edits.iter().map(|e| (e.id.clone(), e.params.clone(), e.hidden)).collect();

@@ -5,13 +5,13 @@ use eframe::egui::{self, Color32, Rounding, Stroke, Vec2};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ThemeId { Graphite, Midnight, Slate, Studio, Paper, Sage }
+pub enum ThemeId { Walnut, Graphite, Midnight, Slate, Studio, Paper, Sage }
 
 impl ThemeId {
-    pub const ALL: [ThemeId; 6] = [ThemeId::Graphite, ThemeId::Midnight, ThemeId::Slate, ThemeId::Studio, ThemeId::Paper, ThemeId::Sage];
-    pub fn key(self) -> &'static str { match self { ThemeId::Graphite => "graphite", ThemeId::Midnight => "midnight", ThemeId::Slate => "slate", ThemeId::Studio => "studio", ThemeId::Paper => "paper", ThemeId::Sage => "sage" } }
+    pub const ALL: [ThemeId; 7] = [ThemeId::Walnut, ThemeId::Graphite, ThemeId::Midnight, ThemeId::Slate, ThemeId::Studio, ThemeId::Paper, ThemeId::Sage];
+    pub fn key(self) -> &'static str { match self { ThemeId::Walnut => "walnut", ThemeId::Graphite => "graphite", ThemeId::Midnight => "midnight", ThemeId::Slate => "slate", ThemeId::Studio => "studio", ThemeId::Paper => "paper", ThemeId::Sage => "sage" } }
     pub fn from_key(k: &str) -> Option<ThemeId> { ThemeId::ALL.into_iter().find(|t| t.key() == k) }
-    pub fn theme(self) -> &'static Theme { match self { ThemeId::Graphite => &GRAPHITE, ThemeId::Midnight => &MIDNIGHT, ThemeId::Slate => &SLATE, ThemeId::Studio => &STUDIO, ThemeId::Paper => &PAPER, ThemeId::Sage => &SAGE } }
+    pub fn theme(self) -> &'static Theme { match self { ThemeId::Walnut => &WALNUT, ThemeId::Graphite => &GRAPHITE, ThemeId::Midnight => &MIDNIGHT, ThemeId::Slate => &SLATE, ThemeId::Studio => &STUDIO, ThemeId::Paper => &PAPER, ThemeId::Sage => &SAGE } }
 }
 
 pub struct Theme {
@@ -27,6 +27,10 @@ pub struct Theme {
     pub text: Color32,
     pub dim: Color32,      // secondary text
     pub accent: Color32,   // selected tabs, tools and slider fill
+    pub on_accent: Color32, // text and icons on the accent
+    pub panel: Color32,    // shelves and open palettes (the ZBrush-style layout)
+    /// The selected backbone drawn solid in this colour (None: dashed guide only).
+    pub highlight: Option<Color32>,
     // canvas
     pub desk: Color32,
     pub paper: Color32,
@@ -40,23 +44,33 @@ pub struct Theme {
 
 const fn hex(v: u32) -> Color32 { Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8) }
 
-pub static GRAPHITE: Theme = Theme { name: "Graphite", blurb: "Soft dark grey. Easy on the eyes for long sessions.", dark: true,
+pub static WALNUT: Theme = Theme { name: "Walnut", blurb: "Warm dark wood, brass accents and a cream page. Made for the shelf layout.", dark: true,
+    bg: hex(0x1d1916), surface: hex(0x312a25), hover: hex(0x3c342d), active: hex(0x4a4037), border: hex(0x3a322b), text: hex(0xece3d6), dim: hex(0xa3978a), accent: hex(0xc9a15a),
+    on_accent: hex(0x1d160c), panel: hex(0x26211d), highlight: Some(hex(0xb07f2e)),
+    desk: hex(0x15120f), paper: hex(0xf6f0e4), ink: hex(0x2a221b), guide: hex(0xb0a58f), mark: hex(0x3a2f22), grid: hex(0xebe3d3), ridge: hex(0x2f6fb0), crease: hex(0xb4533a) };
+pub static GRAPHITE: Theme =Theme { name: "Graphite", blurb: "Soft dark grey. Easy on the eyes for long sessions.", dark: true,
     bg: hex(0x1f2023), surface: hex(0x2a2b2f), hover: hex(0x34363b), active: hex(0x44464d), border: hex(0x323338), text: hex(0xe4e4e7), dim: hex(0x9a9ba2), accent: hex(0x4a4c54),
+    on_accent: hex(0xe4e4e7), panel: hex(0x1f2023), highlight: None,
     desk: hex(0x161719), paper: hex(0x27282c), ink: hex(0xe6e6e8), guide: hex(0x686a72), mark: hex(0xf2f2f3), grid: hex(0x303136), ridge: hex(0x7fb0e0), crease: hex(0xe08a72) };
 pub static MIDNIGHT: Theme = Theme { name: "Midnight", blurb: "Near-black with bright ink. Highest contrast.", dark: true,
     bg: hex(0x0d0d0e), surface: hex(0x19191b), hover: hex(0x232326), active: hex(0x34343a), border: hex(0x1f1f22), text: hex(0xededee), dim: hex(0x8b8b92), accent: hex(0x3a3a40),
+    on_accent: hex(0xededee), panel: hex(0x0d0d0e), highlight: None,
     desk: hex(0x000000), paper: hex(0x121214), ink: hex(0xf2f2f2), guide: hex(0x5c5c63), mark: hex(0xffffff), grid: hex(0x1f1f23), ridge: hex(0x86b7e8), crease: hex(0xe8917a) };
 pub static SLATE: Theme = Theme { name: "Slate", blurb: "Dark interface with a white page, like the printed pattern.", dark: true,
     bg: hex(0x25272b), surface: hex(0x303237), hover: hex(0x3a3d43), active: hex(0x4a4d55), border: hex(0x36383d), text: hex(0xe6e6e8), dim: hex(0xa0a2a8), accent: hex(0x50535b),
+    on_accent: hex(0xe6e6e8), panel: hex(0x25272b), highlight: None,
     desk: hex(0x1b1c1f), paper: hex(0xf6f6f4), ink: hex(0x19191a), guide: hex(0x9a9ea5), mark: hex(0x2a2c31), grid: hex(0xe3e4e6), ridge: hex(0x2f6fb0), crease: hex(0xb4533a) };
 pub static STUDIO: Theme = Theme { name: "Studio", blurb: "Clean light grey with black ink.", dark: false,
     bg: hex(0xf3f3f4), surface: hex(0xe5e5e8), hover: hex(0xdadade), active: hex(0xc4c4ca), border: hex(0xdcdce0), text: hex(0x18181b), dim: hex(0x6b6b73), accent: hex(0xcfcfd6),
+    on_accent: hex(0x18181b), panel: hex(0xf3f3f4), highlight: None,
     desk: hex(0xdcdce0), paper: hex(0xffffff), ink: hex(0x141414), guide: hex(0xa1a1aa), mark: hex(0x27272a), grid: hex(0xe8e8eb), ridge: hex(0x2f6fb0), crease: hex(0xb4533a) };
 pub static PAPER: Theme = Theme { name: "Paper", blurb: "Warm off-white, like a drawing on cartridge paper.", dark: false,
     bg: hex(0xf5f3ee), surface: hex(0xe9e5dd), hover: hex(0xdfdad0), active: hex(0xcac3b6), border: hex(0xdfd9ce), text: hex(0x2a2723), dim: hex(0x7a746b), accent: hex(0xd6cfc2),
+    on_accent: hex(0x2a2723), panel: hex(0xf5f3ee), highlight: None,
     desk: hex(0xe2ddd3), paper: hex(0xfffdf8), ink: hex(0x2a2723), guide: hex(0xb3aa9a), mark: hex(0x3a352f), grid: hex(0xeee9df), ridge: hex(0x3a6f9e), crease: hex(0xa9553d) };
 pub static SAGE: Theme = Theme { name: "Sage", blurb: "The original light theme with green accents.", dark: false,
     bg: hex(0xeef0ec), surface: hex(0xdfe4de), hover: hex(0xd2ddd5), active: hex(0xb9cbbf), border: hex(0xd3dad3), text: hex(0x1c211d), dim: hex(0x66706a), accent: hex(0xbcdcce),
+    on_accent: hex(0x1c211d), panel: hex(0xeef0ec), highlight: None,
     desk: hex(0xcfd4cd), paper: hex(0xffffff), ink: hex(0x151a16), guide: hex(0x9bb6ac), mark: hex(0x286b55), grid: hex(0xdfe8e2), ridge: hex(0x246a9b), crease: hex(0xa24434) };
 
 /// Canvas colours in use, after the "white page" option.
@@ -88,7 +102,7 @@ impl Theme {
         v.window_shadow = egui::epaint::Shadow { offset: Vec2::new(0.0, 8.0), blur: 24.0, spread: 0.0, color: Color32::from_black_alpha(if self.dark { 110 } else { 40 }) };
         v.popup_shadow = egui::epaint::Shadow { offset: Vec2::new(0.0, 4.0), blur: 14.0, spread: 0.0, color: Color32::from_black_alpha(if self.dark { 90 } else { 30 }) };
         v.selection.bg_fill = self.accent;
-        v.selection.stroke = Stroke::new(1.0, self.text);
+        v.selection.stroke = Stroke::new(1.0, self.on_accent);
         v.slider_trailing_fill = true;
         v.text_cursor.stroke = Stroke::new(2.0, self.text);
         v.striped = false;
@@ -187,7 +201,9 @@ pub struct Prefs { pub theme: ThemeId, pub white_page: bool, pub ui_scale: f32, 
     /// Chip workspace: raking-light preview of the cut instead of flat fills.
     pub chip_lit: bool,
     /// Page sizes are entered in inches (else millimetres).
-    pub inches: bool }
+    pub inches: bool,
+    /// The ZBrush-style layout (shelves and palettes); false: the classic panels.
+    pub shelf: bool }
 
 /// The root-join drawing engine chosen in the Canvas settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -197,7 +213,7 @@ impl Joins {
     pub fn from_key(k: &str) -> Option<Joins> { match k { "classic" => Some(Joins::Classic), "smooth" => Some(Joins::Smooth), "exact" => Some(Joins::Exact), _ => None } }
 }
 
-impl Default for Prefs { fn default() -> Self { Prefs { theme: ThemeId::Graphite, white_page: false, ui_scale: 1.0, chip: false, joins: Joins::Exact, fillet: 0.8, chip_lit: false, inches: false } } }
+impl Default for Prefs { fn default() -> Self { Prefs { theme: ThemeId::Walnut, white_page: false, ui_scale: 1.0, chip: false, joins: Joins::Exact, fillet: 0.8, chip_lit: false, inches: false, shelf: true } } }
 
 impl Prefs {
     /// The core join style these preferences ask for.
@@ -213,6 +229,9 @@ impl Prefs {
     pub fn load() -> Prefs {
         let mut p = Prefs::default();
         let Some(text) = prefs_path().and_then(|f| std::fs::read_to_string(f).ok()) else { return p };
+        // Settings saved before the shelf layout existed open once in it, in
+        // Walnut; View → ZBrush-style layout and the Theme list switch back.
+        let mut saw_layout = false;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             match k.trim() {
@@ -224,14 +243,16 @@ impl Prefs {
                 "chip_lit" => p.chip_lit = v.trim() == "true",
                 "units" => p.inches = v.trim() == "in",
                 "ui_scale" => if let Ok(s) = v.trim().parse::<f32>() { p.ui_scale = s.clamp(0.8, 1.5); },
+                "layout" => { saw_layout = true; p.shelf = v.trim() != "classic"; }
                 _ => {}
             }
         }
+        if !saw_layout { p.shelf = true; p.theme = ThemeId::Walnut; }
         p
     }
     pub fn save(&self) {
         let Some(f) = prefs_path() else { return };
         if let Some(dir) = f.parent() { let _ = std::fs::create_dir_all(dir); }
-        let _ = std::fs::write(f, format!("theme={}\nwhite_page={}\nui_scale={:.2}\nworkspace={}\njoins={}\nfillet={:.2}\nchip_lit={}\nunits={}\n", self.theme.key(), self.white_page, self.ui_scale, if self.chip { "chip" } else { "scroll" }, self.joins.key(), self.fillet, self.chip_lit, if self.inches { "in" } else { "mm" }));
+        let _ = std::fs::write(f, format!("theme={}\nwhite_page={}\nui_scale={:.2}\nworkspace={}\njoins={}\nfillet={:.2}\nchip_lit={}\nunits={}\nlayout={}\n", self.theme.key(), self.white_page, self.ui_scale, if self.chip { "chip" } else { "scroll" }, self.joins.key(), self.fillet, self.chip_lit, if self.inches { "in" } else { "mm" }, if self.shelf { "shelf" } else { "classic" }));
     }
 }
