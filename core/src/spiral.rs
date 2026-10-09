@@ -2,7 +2,7 @@
 //! accent shoots share the rising sweep.
 use crate::contour::{acanthus_contour, root_flare, shoot_stalk, ContourOptions, Ends, GOLDEN_SMALL, MAIN_ENDS};
 use crate::geometry::{distance, line_frame, line_length, pt, Point};
-use crate::growth::{grow_curl, GrowthPart, GrowthResult, GrowthSettings, Kind, Mulberry, Page, Side};
+use crate::growth::{curl_sweep, grow_curl, GrowthPart, GrowthResult, GrowthSettings, Kind, Mulberry, Page, Side, VOLUTE_SIZE, VOLUTE_TURNS};
 use crate::shoots::ShootParams;
 use std::f64::consts::PI;
 
@@ -30,28 +30,52 @@ fn band(points: Vec<Point>, width: f64, kind: Kind, id: &str, parent: Option<&st
     GrowthPart { id: id.into(), parent: parent.map(|s| s.to_string()), kind, points, polygon: left, folds: vec![], ridges: None, cuts: vec![], width, length, birth, duration: if kind == Kind::Primary { 0.52 } else { 0.25 }, contour_split: None, shoot: None, under: false }
 }
 
+/// The main scroll's volute, grown past the guide's end: the largest that
+/// fits (shrunk in steps), on the preferred side, else the other.
+pub(crate) struct MainVolute {
+    /// The curl (its first point is the guide's end) and the side it turns to (±1).
+    pub points: Vec<Point>, pub side: f64,
+    /// The automatic reach after fitting (shoots follow it), the reach the
+    /// leaf is sized from, and the reach and sweep (radians) it was grown with.
+    pub reach: f64, pub leaf_reach: f64, pub drawn: f64, pub sweep: f64,
+    /// The automatic sweep, and the reach gain for wrapping leaves.
+    pub base_sweep: f64, pub reach_gain: f64,
+}
+pub(crate) fn main_volute(page: &Page, s: &GrowthSettings) -> MainVolute {
+    let guide = page.guide(); let guide_length = line_length(&guide);
+    let free = s.free == Some(true);
+    let mirror = if s.flip == Some(true) { -1.0 } else { 1.0 };
+    let (tp, ta) = line_frame(&guide, 1.0);
+    let preferred = (if s.side == Side::Right { 1.0 } else { -1.0 }) * mirror;
+    // Wrapping leaves need open space inside the curl: a larger, looser volute.
+    let wrapped_curl = s.wraps.unwrap_or(0) > 0;
+    let (reach_gain, curl) = if wrapped_curl { (1.55, 0.86) } else { (1.0, 0.95) };
+    // a hand-set volute: sized and rolled against the automatic one
+    let size = s.volute_size.filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(VOLUTE_SIZE.0, VOLUTE_SIZE.1));
+    let turns = s.volute_turns.filter(|v| v.is_finite()).map_or(1.0, |v| v.clamp(VOLUTE_TURNS.0, VOLUTE_TURNS.1));
+    let mut main_reach = (guide_length * (1.0 - GOLDEN_SMALL) * GOLDEN_SMALL).min(36.0) * reach_gain;
+    let mut v = MainVolute { points: vec![], side: preferred, reach: main_reach, leaf_reach: main_reach, drawn: main_reach * size, sweep: curl_sweep(curl * turns), base_sweep: curl_sweep(curl), reach_gain };
+    for side in [preferred, -preferred] {
+        if !v.points.is_empty() { break; }
+        let mut scale = 1.0;
+        while scale >= 0.15 {
+            let p = grow_curl(tp, ta, main_reach * size * scale, curl * turns, side);
+            if page.fits(&p, 2.0, free) { v.points = p; v.side = side; v.drawn = main_reach * size * scale; main_reach *= scale; break; }
+            scale -= 0.1;
+        }
+    }
+    // the leaf narrows with a smaller volute but doesn't widen with a larger one
+    v.reach = main_reach; v.leaf_reach = main_reach * size.min(1.0);
+    v
+}
+
 pub fn spiral_anatomy(page: &Page, s: &GrowthSettings) -> GrowthResult {
     let mut rand = Mulberry(s.seed);
     let guide = page.guide(); let guide_length = line_length(&guide);
     let free = s.free == Some(true);
     let in_page = |pts: &[Point]| page.fits(pts, 2.0, free);
     let mirror = if s.flip == Some(true) { -1.0 } else { 1.0 };
-    let (tp, ta) = line_frame(&guide, 1.0);
-    let preferred = (if s.side == Side::Right { 1.0 } else { -1.0 }) * mirror;
-    let mut ending: Vec<Point> = vec![]; let mut terminal_side = preferred;
-    // Wrapping leaves need open space inside the curl: a larger, looser volute.
-    let wrapped_curl = s.wraps.unwrap_or(0) > 0;
-    let (reach_gain, curl) = if wrapped_curl { (1.55, 0.86) } else { (1.0, 0.95) };
-    let mut main_reach = (guide_length * (1.0 - GOLDEN_SMALL) * GOLDEN_SMALL).min(36.0) * reach_gain;
-    for side in [preferred, -preferred] {
-        if !ending.is_empty() { break; }
-        let mut scale = 1.0;
-        while scale >= 0.15 {
-            let p = grow_curl(tp, ta, main_reach * scale, curl, side);
-            if in_page(&p) { ending = p; terminal_side = side; main_reach *= scale; break; }
-            scale -= 0.1;
-        }
-    }
+    let MainVolute { points: ending, side: terminal_side, reach: main_reach, leaf_reach, reach_gain, .. } = main_volute(page, s);
     let mut spine = guide.clone(); if ending.len() > 1 { spine.extend_from_slice(&ending[1..]); }
     let mut parts = vec![band(spine, (guide_length * 0.045).min(7.3), Kind::Primary, "spiral", None, 0.0)];
     let count = if s.levels == 2 { 3 } else { 1 }; let secondary_scale = s.secondary_scale.unwrap_or(1.0);
@@ -82,7 +106,7 @@ pub fn spiral_anatomy(page: &Page, s: &GrowthSettings) -> GrowthResult {
         let turn = wrap(line_frame(&points, 0.55).1 - line_frame(&points, 0.15).1);
         let sign = if turn > 0.0 { 1.0 } else if turn < 0.0 { -1.0 } else { 0.0 };
         let side = if is_main { terminal_side } else { -(if sign != 0.0 { sign } else { terminal_side }) };
-        let leaf_width = if is_main { main_reach * GOLDEN_SMALL / reach_gain } else { length * (1.0 - GOLDEN_SMALL) * GOLDEN_SMALL };
+        let leaf_width = if is_main { leaf_reach * GOLDEN_SMALL / reach_gain } else { length * (1.0 - GOLDEN_SMALL) * GOLDEN_SMALL };
         // A backbone growing from another stem starts narrow and flares out
         // of it like a leaf root, instead of starting blunt.
         let attached = is_main && s.attach.is_some();

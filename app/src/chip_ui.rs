@@ -1,7 +1,8 @@
 //! The Chip workspace: generate a chip-carving medallion, edit it on the
 //! millimetre grid, keep presets and export the SVG at actual size.
 use super::*;
-use crate::presets::{app_dir, Library};
+use crate::platform;
+use crate::presets::Library;
 use scroll_core::facets::{shade, BorderStyle, Centre, Chip, FillEdge, Repeat};
 use scroll_core::boxes::{BoxDesign, Face, DIMENSIONS};
 use scroll_core::chip::{FillLayout, apply_edits, chip_facets, chip_handles, chip_regions, generated_with_starts, ChipFill, Faceted, chip_svg, move_chip_handle, valid_chip, ChipFamily, ChipSettings};
@@ -71,12 +72,12 @@ pub struct ChipState {
     box_third: f64,
 }
 
-fn autosave_path() -> Option<PathBuf> { app_dir().map(|d| d.join("chip-current.json")) }
+const AUTOSAVE: &str = "chip-current.json";
 
 impl ChipState {
     pub fn new() -> ChipState {
         // the current pattern, or the box being built, as last kept on this computer
-        let text = autosave_path().and_then(|p| std::fs::read_to_string(p).ok());
+        let text = platform::store_read(AUTOSAVE);
         let boxd = text.as_deref().and_then(|t| io::parse_box(t).ok()).map(|design| BoxState { design, face: Face::Lid, view3d: false, from_back: false });
         let settings = match &boxd { Some(b) => b.design.lid.clone(), None => text.as_deref().and_then(|t| io::parse_chip(t).ok()).unwrap_or_default() };
         ChipState { autosaved: text, boxd, iso_cache: None, box_face: Face::Lid, box_third: 60.0, settings, path: None, past: vec![], future: vec![], selected: None, show_grid: true, tab: ChipTab::Generate, drag: None, drag_before: None,
@@ -115,7 +116,7 @@ impl ChipState {
         if self.drag.is_some() { return; }
         let text = self.document();
         if self.autosaved.as_ref() == Some(&text) { return; }
-        if let Some(p) = autosave_path() { if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(p, &text); }
+        let _ = platform::store_write(AUTOSAVE, &text);
         self.autosaved = Some(text);
     }
     /// What Save writes: the box with all its panels, or the single pattern.
@@ -166,8 +167,8 @@ impl ChipState {
     pub fn export_sheet(&mut self) {
         let Some(b) = &self.boxd else { return };
         let svg = b.design.sheet_svg();
-        if let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).set_file_name("box-panels.svg").save_file() {
-            match std::fs::write(&p, svg) { Ok(()) => self.message = format!("Exported all panels to {}.", p.display()), Err(e) => self.message = format!("Could not export: {e}") }
+        if let Some(p) = platform::choose_save("SVG", &["svg"], "box-panels.svg") {
+            match platform::write_file(&p, &svg) { Ok(()) => self.message = format!("Exported all panels to {}.", platform::shown(&p)), Err(e) => self.message = format!("Could not export: {e}") }
         }
     }
     pub fn toggle_lasso(&mut self) {
@@ -222,9 +223,9 @@ impl ChipState {
         self.change(s); self.path = None; self.selected = None; self.fitted = false;
         self.message = format!("New {} × {} mm chip pattern. Undo returns to the previous one.", w, h);
     }
-    pub fn open(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Chip layout or box", &["json"]).pick_file() else { return };
-        let text = match std::fs::read_to_string(&path) { Ok(t) => t, Err(e) => { self.message = format!("Could not open this file. {e}"); return } };
+    /// A picked file, once read (at once on the desktop, a moment later on the web).
+    pub fn open_text(&mut self, picked: platform::Opened) {
+        let (path, text) = match picked { Ok(p) => p, Err(e) => { self.message = format!("Could not open this file. {e}"); return } };
         // a box first, then a single pattern
         if let Ok(design) = io::parse_box(&text) {
             let s = design.lid.clone();
@@ -241,14 +242,14 @@ impl ChipState {
     pub fn save(&mut self, choose: bool) {
         let boxed = self.boxd.is_some();
         let path = if choose || self.path.is_none() {
-            let name = if boxed { "box.json" } else { "chip-layout.json" };
-            match rfd::FileDialog::new().add_filter(if boxed { "Box" } else { "Chip layout" }, &["json"]).set_file_name(name).save_file() { Some(p) => p, None => return }
+            let name = if boxed { "box.ornatr" } else { "chip-layout.ornatr" };
+            match platform::choose_save(if boxed { "ORNATR box" } else { "ORNATR chip layout" }, &["ornatr"], name) { Some(p) => p, None => return }
         } else { self.path.clone().unwrap() };
-        match std::fs::write(&path, self.document()) { Ok(()) => { self.path = Some(path); self.message = if boxed { "Box saved.".into() } else { "Chip layout saved.".into() }; } Err(e) => self.message = format!("Could not save: {e}") }
+        match platform::write_file(&path, &self.document()) { Ok(()) => { self.path = Some(path); self.message = if boxed { "Box saved.".into() } else { "Chip layout saved.".into() }; } Err(e) => self.message = format!("Could not save: {e}") }
     }
     pub fn export(&mut self) {
-        if let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).set_file_name("chip-pattern.svg").save_file() {
-            match std::fs::write(&p, chip_svg(&self.settings)) { Ok(()) => self.message = format!("Exported {}.", p.display()), Err(e) => self.message = format!("Could not export: {e}") }
+        if let Some(p) = platform::choose_save("SVG", &["svg"], "chip-pattern.svg") {
+            match platform::write_file(&p, &chip_svg(&self.settings)) { Ok(()) => self.message = format!("Exported {}.", platform::shown(&p)), Err(e) => self.message = format!("Could not export: {e}") }
         }
     }
     pub fn remove_selected(&mut self) { if let Some(i) = self.selected { let mut s = self.settings.clone(); s.removed.push(i); self.change(s); self.selected = None; } }
@@ -290,7 +291,7 @@ impl App {
     pub(crate) fn chip_menus(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("File", |ui| {
             if ui.add(egui::Button::new("New chip pattern…").shortcut_text("Ctrl+N")).clicked() { self.open_new_dialog(); ui.close_menu(); }
-            if ui.add(egui::Button::new("Open chip layout…").shortcut_text("Ctrl+O")).clicked() { ui.close_menu(); self.chip.open(); }
+            if ui.add(egui::Button::new("Open chip layout…").shortcut_text("Ctrl+O")).clicked() { ui.close_menu(); self.open_chip(ui.ctx()); }
             if ui.add(egui::Button::new("Save chip layout").shortcut_text("Ctrl+S")).clicked() { ui.close_menu(); self.chip.save(false); }
             if ui.add(egui::Button::new("Save chip layout as…").shortcut_text("Ctrl+Shift+S")).clicked() { ui.close_menu(); self.chip.save(true); }
             ui.separator();
@@ -589,7 +590,7 @@ impl App {
         let rect = resp.rect;
         let st = &mut self.chip;
         if st.boxd.as_ref().is_some_and(|b| b.view3d) { draw_box_3d(st, &painter, rect, &cc); return; }
-        if !st.fitted { st.fit(rect); }
+        if !st.fitted && rect.width() > 120.0 && rect.height() > 120.0 { st.fit(rect); }
         if let Some(hover) = resp.hover_pos() {
             let (scroll, zoom_delta) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let factor = if zoom_delta != 1.0 { zoom_delta } else { (scroll * 0.0015).exp() };
@@ -933,7 +934,7 @@ impl App {
                     return;
                 };
                 shelf_caption(ui, t, "CENTRE");
-                let centres: [(Centre, &str, fn(&egui::Painter, Rect, Color32)); 4] = [(Centre::Star, "Star", icon_centre_star), (Centre::Petals, "Petals", icon_centre_petals), (Centre::Fan, "Fan", icon_centre_fan), (Centre::Swirl, "Swirl", icon_centre_swirl)];
+                let centres: [(Centre, &str, fn(&egui::Painter, Rect, Color32)); 5] = [(Centre::Star, "Star", icon_centre_star), (Centre::Petals, "Petals", icon_centre_petals), (Centre::Fan, "Fan", icon_centre_fan), (Centre::Swirl, "Swirl", icon_centre_swirl), (Centre::Rocaille, "Rocaille", icon_centre_rocaille)];
                 let mut n = f;
                 for (c, name, icon) in centres {
                     if tile(ui, t, name, icon, f.field.is_none() && f.centre == c).on_hover_text(c.label()).clicked() { n.field = None; if n.centre != c { n.centre = c; n.count = c.default_count(); } }
@@ -1025,6 +1026,15 @@ fn icon_centre_fan(p: &egui::Painter, r: Rect, c: Color32) {
 fn icon_centre_swirl(p: &egui::Painter, r: Rect, c: Color32) {
     for k in 0..6 { let a0 = k as f32 * std::f32::consts::TAU / 6.0; p.add(Shape::line((0..=16).map(|i| { let s = i as f32 / 16.0; polar(r, a0 + s * 1.6, 0.15 + s * 0.85) }).collect(), Stroke::new(1.3, c))); }
     p.circle_stroke(r.center(), r.width() * 0.5, Stroke::new(1.0, c));
+}
+/// Rocaille swirl: C-scrolls whirling round a fluted centre.
+fn icon_centre_rocaille(p: &egui::Painter, r: Rect, c: Color32) {
+    for k in 0..5 {
+        let a0 = k as f32 * std::f32::consts::TAU / 5.0;
+        // a comma: out from the centre, curling ever tighter into a hooked head
+        p.add(Shape::line((0..=20).map(|i| { let s = i as f32 / 20.0; polar(r, a0 + s * 0.9 + s * s * s * 2.4, 0.3 + 0.62 * s - 0.25 * s * s * s) }).collect(), Stroke::new(1.4, c)));
+    }
+    p.circle_stroke(r.center(), r.width() * 0.13, Stroke::new(1.0, c));
 }
 fn icon_field(p: &egui::Painter, r: Rect, c: Color32) {
     for i in 0..3 { for j in 0..3 {

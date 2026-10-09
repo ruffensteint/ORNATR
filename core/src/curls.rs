@@ -467,3 +467,37 @@ pub fn clad_in_vine_leaf(mut g: crate::growth::GrowthResult, k: f64) -> crate::g
     }
     g
 }
+
+/// `clad_in_vine_leaf` with a fat root on each main sweep (study stage, crest
+/// study 2026-10-07; not used by the app): the main sweep's leaf is widest at
+/// the scroll's root and tapers into the volute (`acanthus::clad_scroll_fat`),
+/// `fat` × the shoots' reach instead of half of it, on a stem `fat` times
+/// thicker. Shoots are clad as before.
+pub fn clad_in_vine_leaf_fat(g: crate::growth::GrowthResult, k: f64, fat: f64) -> crate::growth::GrowthResult {
+    clad_in_vine_leaf_fat_with(g, k, fat, &crate::acanthus::FatStyle::default())
+}
+/// `clad_in_vine_leaf_fat` with a `FatStyle` on the main sweeps (crest round 7).
+pub fn clad_in_vine_leaf_fat_with(mut g: crate::growth::GrowthResult, k: f64, fat: f64, style: &crate::acanthus::FatStyle) -> crate::growth::GrowthResult {
+    let (spec, reach, max_half) = scroll_leaf();
+    for p in g.parts.iter_mut() {
+        if p.points.len() < 8 || crate::collar::is_collar(p) || p.id.rsplit('/').next().is_some_and(|s| s.starts_with("wrap-")) { continue; }
+        if p.shoot.as_ref().and_then(|s| s.preset.as_deref()).is_some() { continue; }
+        let main = p.parent.is_none();
+        let len = crate::geometry::line_length(&p.points);
+        let own = crate::acanthus::LeafSpec { groups: if len < 90.0 { 1 } else { spec.groups }, ..spec };
+        let leaf = if main {
+            let half = (len * reach).min(max_half * k) * fat;
+            let stem = (p.width * 0.5).clamp(1.5, 4.0) * fat;
+            // the whole scroll's turning (the volute dominates) decides the convex side:
+            // a stem that dips first, or an S-shaped base, turns the first part the other way
+            let n = p.points.len(); let h = |i: usize| (p.points[i + 1].y - p.points[i].y).atan2(p.points[i + 1].x - p.points[i].x);
+            let turn: f64 = (0..n - 2).map(|i| { let d = h(i + 1) - h(i); d.sin() }).sum();
+            let own = crate::acanthus::LeafSpec { groups: own.groups + 2, ..own };
+            crate::acanthus::clad_scroll_fat_with(&p.points, &own, -turn.signum(), half, stem.max(half * 0.5), style)
+        } else {
+            crate::acanthus::clad_scroll(&p.points, &own, -turn_of(&p.points), (len * reach).min(max_half * k), 1.6)
+        };
+        p.polygon = leaf.polygon; p.folds = leaf.folds; p.cuts = leaf.cuts; p.ridges = Some(vec![]);
+    }
+    g
+}

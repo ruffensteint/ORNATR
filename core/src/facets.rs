@@ -135,20 +135,21 @@ pub fn lens(a: Point, b: Point, sag: f64) -> Chip {
 
 /// The rosette constructions, as offered in the app.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Centre { Star, Petals, Fan, Swirl }
+pub enum Centre { Star, Petals, Fan, Swirl, Rocaille }
 
 impl Centre {
-    pub const ALL: [Centre; 4] = [Centre::Star, Centre::Petals, Centre::Fan, Centre::Swirl];
-    pub fn key(self) -> &'static str { match self { Centre::Star => "star", Centre::Petals => "petals", Centre::Fan => "fan", Centre::Swirl => "swirl" } }
+    /// "Generate variation" picks only from the first four (`Faceted::from_seed`), so old seeds keep their patterns.
+    pub const ALL: [Centre; 5] = [Centre::Star, Centre::Petals, Centre::Fan, Centre::Swirl, Centre::Rocaille];
+    pub fn key(self) -> &'static str { match self { Centre::Star => "star", Centre::Petals => "petals", Centre::Fan => "fan", Centre::Swirl => "swirl", Centre::Rocaille => "rocaille" } }
     pub fn from_key(k: &str) -> Option<Centre> { Centre::ALL.into_iter().find(|c| c.key() == k) }
-    pub fn label(self) -> &'static str { match self { Centre::Star => "Faceted star", Centre::Petals => "Compass petals", Centre::Fan => "Fan and rings", Centre::Swirl => "Swirl" } }
+    pub fn label(self) -> &'static str { match self { Centre::Star => "Faceted star", Centre::Petals => "Compass petals", Centre::Fan => "Fan and rings", Centre::Swirl => "Swirl", Centre::Rocaille => "Rocaille swirl" } }
     /// What the count means for this construction.
-    pub fn count_label(self) -> &'static str { match self { Centre::Star => "Points", Centre::Petals => "Petals", Centre::Fan => "Rays", Centre::Swirl => "Sweeps" } }
-    pub fn counts(self) -> std::ops::RangeInclusive<u32> { match self { Centre::Star => 5..=16, Centre::Petals => 4..=12, Centre::Fan => 6..=24, Centre::Swirl => 6..=18 } }
-    pub fn default_count(self) -> u32 { match self { Centre::Star => 8, Centre::Petals => 6, Centre::Fan => 12, Centre::Swirl => 12 } }
+    pub fn count_label(self) -> &'static str { match self { Centre::Star => "Points", Centre::Petals => "Petals", Centre::Fan => "Rays", Centre::Swirl => "Sweeps", Centre::Rocaille => "Scrolls" } }
+    pub fn counts(self) -> std::ops::RangeInclusive<u32> { match self { Centre::Star => 5..=16, Centre::Petals => 4..=12, Centre::Fan => 6..=24, Centre::Swirl => 6..=18, Centre::Rocaille => 5..=9 } }
+    pub fn default_count(self) -> u32 { match self { Centre::Star => 8, Centre::Petals => 6, Centre::Fan => 12, Centre::Swirl => 12, Centre::Rocaille => 7 } }
     pub fn build(self, c: Point, r: f64, count: u32) -> Rosette {
         let n = count.clamp(*self.counts().start(), *self.counts().end()) as usize;
-        match self { Centre::Star => faceted_star(c, r, n), Centre::Petals => hexafoil(c, r, n), Centre::Fan => fan_rings(c, r, n), Centre::Swirl => swirl(c, r, n) }
+        match self { Centre::Star => faceted_star(c, r, n), Centre::Petals => hexafoil(c, r, n), Centre::Fan => fan_rings(c, r, n), Centre::Swirl => swirl(c, r, n), Centre::Rocaille => rocaille_swirl(c, r, n) }
     }
 }
 
@@ -249,6 +250,68 @@ pub fn swirl(c: Point, r: f64, count: usize) -> Rosette {
         chips.push(tri(c, polar(c, sr, a), polar(c, sr * 0.42, a + s2 / 2.0)));
     }
     Rosette { name: "D  Swirl", note: "12 sweeping two-cut crescents around a small star", centre: c, radius: r, chips }
+}
+
+/// A C-scroll as a two-cut chip: from a thin tail at `start` along `heading`,
+/// curling to `side` ever tighter into a fat hooked head. The deep line runs
+/// along the spine, nearer the inside of the curl (the steep wall).
+pub fn comma(start: Point, heading: f64, length: f64, side: f64, curl: f64, wmax: f64) -> Chip {
+    let smooth = |t: f64| { let t = t.clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+    let n = ((length / 0.4).ceil() as usize).max(24); let ds = length / n as f64;
+    let (mut p, mut h) = (start, heading); let mut sp = vec![(p, h)];
+    for i in 0..n {
+        let u = (i as f64 + 0.5) / n as f64;
+        let k = side * (0.4 + curl * 2.6 * smooth((u - 0.4) / 0.6).powf(1.2)) / length;
+        let hm = h + k * ds / 2.0; p = pt(p.x + hm.cos() * ds, p.y + hm.sin() * ds); h += k * ds; sp.push((p, h));
+    }
+    let n = sp.len();
+    let w = |i: usize| { let u = i as f64 / (n - 1) as f64; wmax * (0.12 + 0.88 * smooth(u / 0.5)) * (1.0 - 0.9 * smooth((u - 0.62) / 0.38)) + 0.05 };
+    let off = |i: usize, f: f64| { let (q, a) = sp[i]; pt(q.x - a.sin() * f, q.y + a.cos() * f) };
+    let mut o: Vec<Point> = (0..n).map(|i| off(i, w(i))).collect();
+    o.extend((1..n - 1).rev().map(|i| off(i, -w(i))));
+    let floor: Vec<Point> = (n / 10..n - n / 10).map(|i| off(i, side * w(i) * 0.25)).collect();
+    Chip { outline: o, floor, corners: vec![0, n - 1] }
+}
+
+/// A shell as chips: flutes from hinge `h` to a scalloped lip, fanned over
+/// `span` round `axis`, reach `r` (longer to one side by `asym`); each flute
+/// is cut deepest toward its outer end, the uncut ridges between them are the
+/// shell's flutes. `hinge` adds a small chip at the hinge.
+pub fn shell_fan(h: Point, axis: f64, span: f64, flutes: usize, r: f64, asym: f64, hinge: bool) -> Vec<Chip> {
+    let reach = |t: f64| r * (0.72 + 0.28 * (PI * t).sin()) * (1.0 + asym * (t - 0.5));
+    let mut out = vec![];
+    for i in 0..flutes {
+        let (t0, t1) = (i as f64 / flutes as f64, (i + 1) as f64 / flutes as f64);
+        let (a0, a1) = (axis - span / 2.0 + span * t0, axis - span / 2.0 + span * t1);
+        let (p0, p1) = (polar(h, reach(t0), a0), polar(h, reach(t1), a1));
+        // the scallop bulges away from the hinge
+        let mut lip = arc(p0, p1, distance(p0, p1) * 0.22, 8);
+        if distance(lip[4], h) < distance(lerp(p0, p1, 0.5), h) { lip = arc(p0, p1, -distance(p0, p1) * 0.22, 8); }
+        let mut o = vec![polar(h, r * 0.16, (a0 + a1) / 2.0)]; o.extend(lip.iter().copied());
+        let last = o.len() - 1;
+        out.push(Chip { outline: o, floor: vec![polar(h, (reach(t0) + reach(t1)) / 2.0 * 0.66, (a0 + a1) / 2.0)], corners: vec![0, 1, last] });
+    }
+    if hinge { out.push(tri(polar(h, r * 0.16, axis - span / 2.0), polar(h, r * 0.16, axis + span / 2.0), polar(h, r * 0.08, axis + PI))); }
+    out
+}
+
+/// E: rocaille swirl (the rococo study S2, the user's pick): `count` big
+/// C-scroll chips whirling one way round a ring of shell-flute chips, a small
+/// counter-scroll tucked in each one's hollow, scallop lenses round the rim
+/// between the scroll heads.
+pub fn rocaille_swirl(c: Point, r: f64, count: usize) -> Rosette {
+    let n = count as f64;
+    // the study was drawn for 7 scrolls; angular offsets scale with the step
+    let k = 7.0 / n;
+    let mut chips = shell_fan(c, -PI / 2.0, 2.0 * PI * 0.999, 2 * count, r * 0.26, 0.0, false);
+    for i in 0..count {
+        let a = -PI / 2.0 + i as f64 * 2.0 * PI / n;
+        chips.push(comma(polar(c, r * 0.32, a), a + 0.35 * k, r * 0.78, 1.0, 3.6, r * 0.11 * k.min(1.0)));
+        chips.push(comma(polar(c, r * 0.5, a + 0.42 * k), a + 1.0 * k, r * 0.32, -1.0, 3.0, r * 0.045 * k.min(1.0)));
+        let b = a + PI / n + 0.62 * k;
+        chips.push(lens(polar(c, r * 0.93, b - 0.12 * k), polar(c, r * 0.93, b + 0.12 * k), -r * 0.035));
+    }
+    Rosette { name: "E  Rocaille swirl", note: "C-scroll chips whirling round a shell ring, counter-scrolls, rim scallops", centre: c, radius: r, chips }
 }
 
 /// A ring of outward-pointing triangles between radii `r0` and `r1`; `phase` in steps.

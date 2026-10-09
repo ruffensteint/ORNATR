@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "width": 215.0,
+  "height": 215.0,
+  "curve": [{"x": 123.00059892860848, "y": 60.72962773465443}, {"x": 43.099999999999994, "y": 39.5}, {"x": 52.3, "y": 183.5}, {"x": 140.62, "y": 137.5}],
+  "extraCurves": [[{"x": 114.71437278694802, "y": 146.2120598912807}, {"x": 153.35437278694803, "y": 147.2120598912807}, {"x": 127.59437278694803, "y": 87.21205989128069}, {"x": 99.99437278694802, "y": 105.21205989128069}]],
+  "backboneGrowth": [
+    {"seed": 1248, "branches": 5.0, "reach": 33.0, "curl": 1.0, "levels": 2, "leaves": 2, "clearance": 2.0, "stem": 2.8, "side": "left", "family": "spiral", "autoShoots": false, "free": true, "vineLeaf": true, "voluteSize": 0.25, "voluteTurns": 0.3},
+    {"seed": 1248, "branches": 5.0, "reach": 33.0, "curl": 1.0, "levels": 2, "leaves": 2, "clearance": 2.0, "stem": 2.8, "side": "left", "family": "spiral", "autoShoots": false, "free": true, "attach": 0, "voluteSize": 1.1}
+  ],
+  "growth": {"seed": 1248, "branches": 5.0, "reach": 33.0, "curl": 1.0, "levels": 2, "leaves": 2, "clearance": 2.0, "stem": 2.8, "side": "left", "family": "spiral", "autoShoots": false, "free": true, "vineLeaf": true, "voluteSize": 0.25, "voluteTurns": 0.3},
+  "shoots": [{"id": "crest", "backbone": 0, "progress": 0.89, "reach": 0.62, "turn": -0.15, "curl": 0.66, "side": -1.0, "preset": "crest-leaf"}],
+  "items": [],
+  "printBackbone": false,
+  "mode": "growth"
+}

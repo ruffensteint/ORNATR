@@ -6,7 +6,10 @@ pub const fn pt(x: f64, y: f64) -> Point { Point { x, y } }
 pub type Curve = [Point; 4];
 
 pub fn clamp(v: f64, lo: f64, hi: f64) -> f64 { lo.max(hi.min(v)) }
-pub fn distance(a: Point, b: Point) -> f64 { (a.x - b.x).hypot(a.y - b.y) }
+/// sqrt rather than `hypot`: sqrt is exact on every platform, so the desktop and
+/// web editions agree, and the web edition's `hypot` made growth ten times slower.
+/// (Millimetre distances never come near where hypot's overflow care matters.)
+pub fn distance(a: Point, b: Point) -> f64 { let (dx, dy) = (a.x - b.x, a.y - b.y); (dx * dx + dy * dy).sqrt() }
 pub fn lerp(a: Point, b: Point, t: f64) -> Point { pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t) }
 pub fn cross(a: Point, b: Point) -> f64 { a.x * b.y - a.y * b.x }
 pub fn sub(a: Point, b: Point) -> Point { pt(a.x - b.x, a.y - b.y) }

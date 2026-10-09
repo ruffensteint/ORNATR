@@ -14,6 +14,7 @@ The desktop program (`app/`) depends directly on:
 | rfd | 0.15.4 | MIT |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.151 | MIT OR Apache-2.0 |
+| web-time | 1.1.0 | MIT OR Apache-2.0 |
 
 Cargo downloads these and their transitive dependencies (pinned in `Cargo.lock`) when you build. None of them are included in this repository. Each keeps its own license and notices, which ship with its source in the Cargo registry.
 

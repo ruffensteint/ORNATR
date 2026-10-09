@@ -54,15 +54,25 @@ fn envelope_with(u: f64, w: f64, stalk: f64) -> f64 {
 /// rounded fingers, the last one longest and hooked toward the leaf's tip.
 /// Groups are separated by a cut that runs in from the silhouette as a slit
 /// and ends in a round eye.
-fn side(s: &LeafSpec) -> (Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>, Vec<Vec<(f64, f64)>>) {
-    let w = s.width; let (u0, u1) = (0.14, 0.8);
-    let bounds: Vec<f64> = (0..=s.groups).map(|g| u0 + (u1 - u0) * (g as f64 / s.groups as f64).powf(0.85)).collect();
+fn side(s: &LeafSpec) -> (Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>, Vec<Vec<(f64, f64)>>) { side_env(s, &|u, w| envelope_with(u, w, s.stalk), 0.14, None) }
+/// `side` with its envelope and the first lobe group's start given (the fat-root
+/// cladding uses its own envelope and starts the lobes at the root), and
+/// optionally the group boundaries themselves (from the first group's start
+/// to the last group's end; `s.groups` is then ignored).
+fn side_env(s: &LeafSpec, envelope: &dyn Fn(f64, f64) -> f64, u0: f64, given: Option<&[f64]>) -> (Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>, Vec<Vec<(f64, f64)>>) {
+    let w = s.width;
+    let bounds: Vec<f64> = match given {
+        Some(b) if b.len() >= 2 => b.to_vec(),
+        // the lobe groups run from u0 (0.14 normally) to u1
+        _ => { let u1 = 0.8; (0..=s.groups).map(|g| u0 + (u1 - u0) * (g as f64 / s.groups as f64).powf(0.85)).collect() }
+    };
+    let s = &LeafSpec { groups: bounds.len() - 1, ..*s };
+    let (u0, u1) = (bounds[0], bounds[bounds.len() - 1]);
     // the silhouette dips only to the notch; with `cut` set, a slit runs on
     // from there deep into the leaf and ends in the eye
     let slit = s.cut > 0.0;
     let cut_depth = if slit { 0.93 } else { 1.0 - s.notch * 1.6 };
     let (rise_w, fall_w) = if slit { (0.07, 0.04) } else { (0.22, 0.1) };
-    let envelope = |u: f64, w: f64| envelope_with(u, w, s.stalk);
     let nf = s.fingers.max(1) as f64;
     // the silhouette as a factor of the envelope at u
     let factor = |u: f64| -> f64 {
@@ -163,6 +173,78 @@ pub fn clad_scroll(spine: &[Point], s: &LeafSpec, outer: f64, half_width: f64, s
         // a channel along the scroll just inside the leaf, and the pipes into each lobe
         folds.push((0..=60).map(|i| { let u = spec.stalk.max(0.08) + (0.86 - spec.stalk.max(0.08)) * i as f64 / 60.0; place(u, envelope_with(u, spec.width, spec.stalk) * len * 0.12) }).collect());
         folds.extend(pipes.iter().map(|p| { let c: Vec<(f64, f64)> = p.iter().map(|q| (q.0, q.1)).collect(); open(&c).iter().map(|q| place(q.x, q.y * len)).collect::<Vec<Point>>() }));
+    }
+    Leaf { polygon, cuts, folds }
+}
+
+/// The fat-root leaf envelope (crest study, 2026-10-07): full width at the
+/// root, easing down along the sweep and narrowing into the curl, instead of
+/// the usual lens (narrow stalk, broad belly, narrow tip).
+fn envelope_root(u: f64, w: f64) -> f64 {
+    w * (0.22 + 0.78 * (1.0 - u).max(0.0).powf(1.3)) * (1.0 - u.max(0.0).powi(6))
+}
+
+/// `clad_scroll` with a fat root (study stage, not used by the app): the leaf
+/// is widest where the scroll leaves its root and tapers into the volute, and
+/// the stem keeps its full width at the root instead of narrowing to grow
+/// out of a parent. For scrolls that spring from a centre motif, as on crests.
+pub fn clad_scroll_fat(spine: &[Point], s: &LeafSpec, outer: f64, half_width: f64, stem: f64) -> Leaf {
+    clad_scroll_fat_with(spine, s, outer, half_width, stem, &FatStyle::default())
+}
+
+/// Variations on the fat-root leaf (crest study round 7, 2026-10-07; one per
+/// option so each can be judged alone). The default is the plain fat leaf.
+#[derive(Clone, Debug, Default)]
+pub struct FatStyle {
+    /// Creases: ribs running from the root along the sweep, fanning into the
+    /// first lobe, so the root mass reads as a leaf turning out from under the
+    /// centre rather than a pad. Each is (share of the local half-width at the
+    /// root, share where it ends, where it ends along the leaf).
+    pub creases: Vec<(f64, f64, f64)>,
+    /// The lobe groups' boundaries along the leaf (first group's start to the
+    /// last one's end), for unequal groups; None = the usual even spacing.
+    pub groups: Option<Vec<f64>>,
+    /// A waist: (where along the leaf, its half-length, how much narrower).
+    pub waist: Option<(f64, f64, f64)>,
+    /// Leave out the slit and eye after the first lobe group: next to the
+    /// root it sits half under the centre motif, so only a floating eye shows.
+    pub no_root_cut: bool,
+}
+
+/// `clad_scroll_fat` with a `FatStyle`.
+pub fn clad_scroll_fat_with(spine: &[Point], s: &LeafSpec, outer: f64, half_width: f64, stem: f64, style: &FatStyle) -> Leaf {
+    let len = line_length(spine).max(1.0);
+    let spec = LeafSpec { width: half_width / len, stalk: 0.0, ..*s };
+    let place = |u: f64, v: f64| { let (p, a) = line_frame(spine, u.clamp(0.0, 1.0)); pt(p.x - a.sin() * v * outer, p.y + a.cos() * v * outer) };
+    let envelope_root = |u: f64, w: f64| -> f64 {
+        let base = envelope_root(u, w);
+        match style.waist { Some((c, h, d)) => base * (1.0 - d * (-((u - c) / h).powi(2)).exp()), None => base }
+    };
+    let (one, eyes, pipes) = side_env(&spec, &envelope_root, 0.03, style.groups.as_deref());
+    let mut polygon: Vec<Point> = one.iter().map(|(u, v)| place(*u, v * len)).collect();
+    polygon.push(place(1.0, 0.0));
+    let n = 200;
+    polygon.extend((0..=n).rev().map(|i| { let u = i as f64 / n as f64; place(u, -stem * (1.0 - 0.85 * u.powf(0.7))) }));
+    // a rounded root end, from the stem edge round to the leaf's edge
+    let (p0, a0) = line_frame(spine, 0.0);
+    let (r_in, r_out) = (stem, envelope_root(0.0, spec.width) * len);
+    let mid = (r_out - r_in) * 0.5; let rad = (r_out + r_in) * 0.5;
+    for k in 1..12 {
+        let t = std::f64::consts::PI * k as f64 / 12.0;
+        let (along, across) = (-t.sin() * rad * 0.8, mid - t.cos() * rad);
+        polygon.push(pt(p0.x + a0.cos() * along - a0.sin() * across * outer, p0.y + a0.sin() * along + a0.cos() * across * outer));
+    }
+    // each group's cut is a slit then its eye
+    let cuts: Vec<Vec<Point>> = eyes.iter().skip(if style.no_root_cut { 2 } else { 0 }).map(|e| e.iter().map(|(u, v)| place(*u, v * len)).collect()).collect();
+    let mut folds: Vec<Vec<Point>> = vec![];
+    if s.pipes {
+        folds.push((0..=60).map(|i| { let u = 0.04 + 0.82 * i as f64 / 60.0; place(u, envelope_root(u, spec.width) * len * 0.12) }).collect());
+        folds.extend(pipes.iter().map(|p| { let c: Vec<(f64, f64)> = p.iter().map(|q| (q.0, q.1)).collect(); open(&c).iter().map(|q| place(q.x, q.y * len)).collect::<Vec<Point>>() }));
+    }
+    // creases: from the root along the sweep, easing from one share of the
+    // local width to another, so each follows the leaf's own taper
+    for &(a, b, end) in &style.creases {
+        folds.push((0..=50).map(|i| { let t = i as f64 / 50.0; let u = 0.02 + (end - 0.02) * t; place(u, envelope_root(u, spec.width) * len * (a + (b - a) * smooth(t))) }).collect());
     }
     Leaf { polygon, cuts, folds }
 }

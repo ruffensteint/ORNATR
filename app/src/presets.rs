@@ -1,7 +1,8 @@
 //! "My presets": named designs kept on this computer, one library for scroll
-//! layouts and one for chip layouts, in %APPDATA%\ORNATR.
+//! layouts and one for chip layouts, in %APPDATA%\ORNATR (in the web edition,
+//! the browser's storage for the page).
+use crate::platform;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 pub const LIMIT: usize = 40;
 
@@ -11,30 +12,13 @@ pub struct Preset { pub name: String, /// The layout, in its file format.
 
 pub struct Library { file: &'static str, pub entries: Vec<Preset>, pub selected: Option<usize>, pub name: String, pub message: String, pub deleted: Option<Preset> }
 
-/// %APPDATA%\ORNATR. The first time it's missing, the files kept under the
-/// program's former name (%APPDATA%\ScrollWorks) are copied across, so
-/// settings, presets and the current chip pattern carry over.
-pub fn app_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)?;
-    let dir = base.join("ORNATR");
-    let old = base.join("ScrollWorks");
-    if !dir.exists() && old.is_dir() && std::fs::create_dir_all(&dir).is_ok() {
-        for entry in std::fs::read_dir(&old).into_iter().flatten().flatten() {
-            if entry.path().is_file() { let _ = std::fs::copy(entry.path(), dir.join(entry.file_name())); }
-        }
-    }
-    Some(dir)
-}
-
 impl Library {
     pub fn load(file: &'static str) -> Library {
-        let entries = app_dir().and_then(|d| std::fs::read_to_string(d.join(file)).ok()).and_then(|t| serde_json::from_str::<Vec<Preset>>(&t).ok()).unwrap_or_default();
+        let entries = platform::store_read(file).and_then(|t| serde_json::from_str::<Vec<Preset>>(&t).ok()).unwrap_or_default();
         Library { file, entries: entries.into_iter().take(LIMIT).collect(), selected: None, name: String::new(), message: String::new(), deleted: None }
     }
     fn store(&mut self) -> bool {
-        let Some(dir) = app_dir() else { self.message = "No settings folder available.".into(); return false };
-        let _ = std::fs::create_dir_all(&dir);
-        match std::fs::write(dir.join(self.file), serde_json::to_string_pretty(&self.entries).unwrap()) { Ok(()) => true, Err(e) => { self.message = format!("Could not save presets: {e}"); false } }
+        match platform::store_write(self.file, &serde_json::to_string_pretty(&self.entries).unwrap()) { Ok(()) => true, Err(e) => { self.message = format!("Could not save presets: {e}"); false } }
     }
     pub fn add(&mut self, data: serde_json::Value, fallback: &str) {
         if self.entries.len() >= LIMIT { self.message = format!("The library holds {LIMIT} presets. Remove one first."); return; }

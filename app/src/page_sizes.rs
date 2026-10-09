@@ -1,7 +1,7 @@
 //! Page sizes: built-in presets (carving pieces, box panels, paper), sizes you save
 //! (in %APPDATA%\ORNATR\page-sizes.json), millimetre or inch entry, and the New dialog.
 use super::*;
-use crate::presets::app_dir;
+use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
 
@@ -18,16 +18,16 @@ pub struct SavedSize { pub name: String, pub width: f64, pub height: f64 }
 /// Your saved sizes, and the name being typed for the next one.
 pub struct PageSizes { pub saved: Vec<SavedSize>, pub name: String }
 
-fn store_path() -> Option<PathBuf> { app_dir().map(|d| d.join("page-sizes.json")) }
+const STORE: &str = "page-sizes.json";
 
 impl PageSizes {
     pub fn load() -> PageSizes {
-        let saved = store_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Vec<SavedSize>>(&t).ok()).unwrap_or_default()
+        let saved = platform::store_read(STORE).and_then(|t| serde_json::from_str::<Vec<SavedSize>>(&t).ok()).unwrap_or_default()
             .into_iter().filter(|s| s.width.is_finite() && s.height.is_finite() && s.width > 0.0 && s.height > 0.0).collect();
         PageSizes { saved, name: String::new() }
     }
     fn store(&self) {
-        if let Some(p) = store_path() { if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(p, serde_json::to_string_pretty(&self.saved).unwrap()); }
+        let _ = platform::store_write(STORE, &serde_json::to_string_pretty(&self.saved).unwrap());
     }
     /// The preset matching this size (either way round), if any.
     pub fn name_of(&self, w: f64, h: f64) -> Option<String> {
@@ -103,14 +103,14 @@ pub fn size_editor(ui: &mut egui::Ui, t: &Theme, sizes: &mut PageSizes, inches: 
 }
 
 /// The New dialog: choose the page size before starting.
-pub struct NewDialog { pub chip: bool, pub width: f64, pub height: f64 }
+pub struct NewDialog { pub chip: bool, pub rococo: bool, pub cartouche: bool, pub palmette: bool, pub width: f64, pub height: f64 }
 
 /// What the New dialog asked for.
 pub enum NewChoice { Create(f64, f64), Cancel }
 
 pub fn new_dialog(ctx: &egui::Context, t: &Theme, d: &mut NewDialog, sizes: &mut PageSizes, inches: &mut bool) -> Option<NewChoice> {
     let mut choice = None;
-    let title = if d.chip { "New chip pattern" } else { "New scroll pattern" };
+    let title = if d.chip { "New chip pattern" } else if d.rococo { "New rococo design" } else if d.cartouche { "New cartouche" } else if d.palmette { "New palmette" } else { "New scroll pattern" };
     let range = if d.chip { 40.0..=600.0 } else { 40.0..=1000.0 };
     egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
         ui.label(egui::RichText::new("Choose the size of the piece you will carve. You can change it later under Page.").small().color(t.dim));

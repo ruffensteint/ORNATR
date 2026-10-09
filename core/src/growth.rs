@@ -39,9 +39,15 @@ pub struct GrowthSettings {
     /// Clad the scroll and its generated shoots in the scroll vine's acanthus
     /// leaf (on the outside of each turn) instead of the usual contour.
     pub vine_leaf: Option<bool>,
+    /// A hand-set volute on a spiral scroll: its size against the automatic
+    /// one (1 = as grown); None is automatic.
+    pub volute_size: Option<f64>,
+    /// How far the hand-set volute rolls in, against the automatic sweep
+    /// (1 = as grown, about 1.2 turns); None is automatic.
+    pub volute_turns: Option<f64>,
 }
 impl Default for GrowthSettings {
-    fn default() -> Self { GrowthSettings { seed: 1248, branches: 5.0, reach: 33.0, curl: 1.0, levels: 2, leaves: 2, clearance: 2.0, stem: 2.8, side: Side::Alternate, family: None, composition: None, secondary_scale: None, sweeps: None, auto_shoots: None, flip: None, free: None, attach: None, wraps: None, wrap_leaf: None, collar: None, collar_style: None, vine: None, eyes: None, vine_leaf: None } }
+    fn default() -> Self { GrowthSettings { seed: 1248, branches: 5.0, reach: 33.0, curl: 1.0, levels: 2, leaves: 2, clearance: 2.0, stem: 2.8, side: Side::Alternate, family: None, composition: None, secondary_scale: None, sweeps: None, auto_shoots: None, flip: None, free: None, attach: None, wraps: None, wrap_leaf: None, collar: None, collar_style: None, vine: None, eyes: None, vine_leaf: None, volute_size: None, volute_turns: None } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +89,7 @@ pub fn ribbon(points: &[Point], width: f64) -> Vec<Point> {
 }
 /// Logarithmic curl whose root tangent is `angle`; side ±1 picks the turn.
 pub fn grow_curl(root: Point, angle: f64, reach: f64, curl: f64, side: f64) -> Vec<Point> {
-    let (steps, decay) = (140, 0.24);
+    let (steps, decay) = (140, CURL_DECAY);
     let rotation = angle - side.atan2(-decay);
     let mut points = vec![root];
     for i in 1..=steps {
@@ -92,6 +98,61 @@ pub fn grow_curl(root: Point, angle: f64, reach: f64, curl: f64, side: f64) -> V
         points.push(pt(root.x + x * rotation.cos() - y * rotation.sin(), root.y + x * rotation.sin() + y * rotation.cos()));
     }
     points
+}
+
+/// How fast a curl's radius shrinks per radian (`grow_curl`).
+pub const CURL_DECAY: f64 = 0.24;
+/// The sweep in radians of a curl grown with `curl` (`grow_curl`).
+pub fn curl_sweep(curl: f64) -> f64 { PI * 2.0 * 1.25 * curl }
+/// The hand-set volute's limits: size and turns against the automatic one.
+pub const VOLUTE_SIZE: (f64, f64) = (0.25, 3.0);
+pub const VOLUTE_TURNS: (f64, f64) = (0.3, 1.7);
+
+/// A spiral scroll's volute as grown, in page units, for a handle on its tip:
+/// it leaves the stem at `root` heading `angle`, ends at `tip`, and turns to
+/// `side` (±1) of a growth mirrored by `mirror` (±1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoluteHandle { pub root: Point, pub angle: f64, pub tip: Point, pub side: f64, pub mirror: f64, reach: f64, base_reach: f64, sweep: f64, base_sweep: f64, grip: Option<Point> }
+
+/// The volute handle of a backbone grown with `s` along `curve` on a `width`
+/// × `height` page inside `frame` (None unless it grows as a spiral scroll).
+pub fn volute_handle(width: f64, height: f64, curve: &Curve, frame: Option<&[Point]>, s: &GrowthSettings) -> Option<VoluteHandle> {
+    if s.vine.is_some_and(|v| v.is_finite() && v > 0.0) || s.composition == Some(2) || s.family.map_or(false, |f| f != Family::Spiral) { return None; }
+    if line_length(&guide_points(curve)) < 10.0 { return None; }
+    // the same design scale as `grow_backbone`
+    let scale = (width * height / (240.0 * 150.0)).sqrt();
+    let shrink = |p: &Point| pt(p.x / scale, p.y / scale);
+    let page = Page { width: width / scale, height: height / scale, curve: curve.map(|p| shrink(&p)), locked: &[], frame: frame.map(|f| f.iter().map(shrink).collect()) };
+    let v = crate::spiral::main_volute(&page, s);
+    let (&root, &tip) = (v.points.first()?, v.points.last()?);
+    let angle = crate::geometry::line_frame(&page.guide(), 1.0).1;
+    Some(VoluteHandle { root: pt(root.x * scale, root.y * scale), angle, tip: pt(tip.x * scale, tip.y * scale), side: v.side, mirror: if s.flip == Some(true) { -1.0 } else { 1.0 },
+        reach: v.drawn * scale, base_reach: v.reach * scale, sweep: v.sweep, base_sweep: v.base_sweep, grip: None })
+}
+
+impl VoluteHandle {
+    /// Drag the volute's tip to `target`: (size, turns, side), the side
+    /// relative to the growth's mirror as `GrowthSettings.side` takes it (a
+    /// drag keeps it). Going round the eye rolls the curl in or out; the
+    /// distance from where it leaves the stem sizes it, so the tip stays as far
+    /// from there as the pointer. (A curl that tightens at a fixed rate can only
+    /// end in a narrow wedge, so the tip can't simply follow the pointer.)
+    pub fn drag_to(&mut self, target: Point) -> (f64, f64, Side) {
+        let rot = self.angle - self.side.atan2(-CURL_DECAY);
+        let centre = pt(self.root.x - self.reach * rot.cos(), self.root.y - self.reach * rot.sin());
+        if let Some(last) = self.grip {
+            let mut turn = (target.y - centre.y).atan2(target.x - centre.x) - (last.y - centre.y).atan2(last.x - centre.x);
+            while turn > PI { turn -= 2.0 * PI; } while turn < -PI { turn += 2.0 * PI; }
+            // the curl winds toward its side round the eye
+            self.sweep = (self.sweep + self.side * turn).clamp(self.base_sweep * VOLUTE_TURNS.0, self.base_sweep * VOLUTE_TURNS.1);
+        }
+        self.grip = Some(target);
+        let e = (-CURL_DECAY * self.sweep).exp();
+        let span = (e * self.sweep.cos() - 1.0).hypot(e * self.sweep.sin());
+        let far = (target.x - self.root.x).hypot(target.y - self.root.y);
+        self.reach = (far / span).clamp(self.base_reach * VOLUTE_SIZE.0, self.base_reach * VOLUTE_SIZE.1);
+        (self.reach / self.base_reach.max(1e-9), self.sweep / self.base_sweep.max(1e-9), if self.side * self.mirror > 0.0 { Side::Right } else { Side::Left })
+    }
 }
 
 /// Everything a backbone needs to grow: page, curve, locks, edits, settings.

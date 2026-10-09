@@ -119,6 +119,9 @@ fn fill_does_not_seep_into_a_rosette() {
 #[test]
 fn variations_cover_every_centre_and_border() {
     let picks: Vec<Faceted> = (0..200).map(Faceted::from_seed).collect();
-    for c in Centre::ALL { assert!(picks.iter().any(|f| f.centre == c), "{c:?} never picked"); }
+    // variations walk the original four centres (so seeds keep their patterns);
+    // the rocaille swirl is chosen by hand
+    for c in &Centre::ALL[..4] { assert!(picks.iter().any(|f| f.centre == *c), "{c:?} never picked"); }
+    assert!(picks.iter().all(|f| f.centre != Centre::Rocaille));
     for b in [None, Some(BorderStyle::Zigzag), Some(BorderStyle::Arcade), Some(BorderStyle::Almond)] { assert!(picks.iter().any(|f| f.border == b), "{b:?} never picked"); }
 }

@@ -25,3 +25,7 @@ pub mod exact;
 pub mod surfaces;
 pub mod curls;
 pub mod acanthus;
+pub mod rocaille;
+pub mod rococo;
+pub mod cartouche;
+pub mod palmette;

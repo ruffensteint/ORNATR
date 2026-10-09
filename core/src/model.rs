@@ -58,6 +58,13 @@ impl Layout {
         let start = self.curves[index][0];
         arc_table(&self.curves[parent]).into_iter().map(|r| r.point).min_by(|a, b| distance(*a, start).partial_cmp(&distance(*b, start)).unwrap())
     }
+    /// The handle on backbone `index`'s volute, as grown (None for vines and
+    /// families other than the spiral).
+    pub fn volute_handle(&self, index: usize) -> Option<crate::growth::VoluteHandle> {
+        let settled = if self.growth_for(index).attach.is_some() { let mut l = self.clone(); let mut rounds = 0; while rounds < 6 && l.settle() { rounds += 1; } Some(l) } else { None };
+        let l = settled.as_ref().unwrap_or(self);
+        crate::growth::volute_handle(l.width, l.height, l.curves.get(index)?, l.surface_polygon().as_deref(), &l.growth_for(index))
+    }
     /// Attached backbones start on their parent's stem. When a parent changes,
     /// its children (and theirs) move rigidly with the join, keeping their own
     /// shape. Returns true when anything moved.
@@ -122,9 +129,30 @@ impl Layout {
             }
         }
     }
+    /// As `grow`, reusing backbones grown before with the same inputs (kept in
+    /// `cache`), so changing one backbone of many regrows only that one.
+    /// Vines and backbones with kept parts are always grown afresh.
+    pub fn grow_cached(&self, cache: &mut GrowCache) -> GrowthResult {
+        let mut settled = self.clone();
+        let mut rounds = 0; while rounds < 6 && settled.settle() { rounds += 1; }
+        settled.grow_settled_by(&mut |l, i, locked, shoots, obstacles| {
+            if !locked.is_empty() || l.is_vine(i) { return l.grow_one(i, locked, shoots, obstacles, false); }
+            let key = GrowKey { curve: l.curves[i], settings: l.growth_for(i), shoots: shoots.to_vec(), page: (l.width, l.height), surface: l.surface_polygon() };
+            if let Some(k) = cache.0.iter().position(|(q, _)| *q == key) { let hit = cache.0.remove(k); cache.0.push(hit); return cache.0.last().unwrap().1.clone(); }
+            let g = l.grow_one(i, locked, shoots, obstacles, false);
+            if cache.0.len() >= 256 { cache.0.remove(0); }
+            cache.0.push((key, g.clone()));
+            g
+        })
+    }
     fn grow_settled(&self, draft: bool) -> GrowthResult {
+        self.grow_settled_by(&mut |l, i, locked, shoots, obstacles| l.grow_one(i, locked, shoots, obstacles, draft))
+    }
+    /// Grow every backbone with `one` (layout, index, its kept parts, its
+    /// shoot edits, obstacles) and join them up.
+    fn grow_settled_by(&self, one: &mut dyn FnMut(&Layout, usize, &[GrowthPart], &[ShootEdit], &[Vec<Point>]) -> GrowthResult) -> GrowthResult {
         if self.curves.len() == 1 {
-            return self.grow_one(0, &self.locked_parts, &self.shoots.iter().filter(|e| e.backbone == 0).cloned().collect::<Vec<_>>(), &[], draft);
+            return one(self, 0, &self.locked_parts, &self.shoots.iter().filter(|e| e.backbone == 0).cloned().collect::<Vec<_>>(), &[]);
         }
         let mut all = GrowthResult { message: format!("{} backbones · independently grown scrolls", self.curves.len()), ..Default::default() };
         // the usual scrolls first, then vines in order, each vine keeping
@@ -137,7 +165,7 @@ impl Layout {
             let locked: Vec<GrowthPart> = self.locked_parts.iter().filter(|p| p.id.starts_with(&prefix)).map(|p| GrowthPart { id: strip(&p.id), parent: p.parent.as_deref().map(strip), ..p.clone() }).collect();
             let shoots: Vec<ShootEdit> = self.shoots.iter().filter(|e| e.backbone == index).map(|e| ShootEdit { backbone: 0, ..e.clone() }).collect();
             let obstacles: Vec<Vec<Point>> = if self.is_vine(index) { grown.iter().flatten().flat_map(|r| r.parts.iter().map(|p| p.polygon.clone())).collect() } else { vec![] };
-            grown[index] = Some(self.grow_one(index, &locked, &shoots, &obstacles, draft));
+            grown[index] = Some(one(self, index, &locked, &shoots, &obstacles));
         }
         for (index, r) in grown.into_iter().enumerate() {
             let prefix = format!("backbone-{index}/");
@@ -219,6 +247,7 @@ pub const LEAF_PRESETS: &[LeafPreset] = &[
     LeafPreset { id: "two-finger-leaf", name: "Two-finger leaf", detail: "Two rounded fingers · shared taper", size: 0.24 },
     LeafPreset { id: "upright-sprig", name: "Upright sprig", detail: "Rising tip · paired soft lobes", size: 0.24 },
     LeafPreset { id: "sweeping-tongue", name: "Sweeping leaf", detail: "Long belly · single folded return", size: 0.28 },
+    LeafPreset { id: "crest-leaf", name: "Crest leaf", detail: "Curved frond · flame tip", size: 0.45 },
 ];
 pub fn preset_params(id: &str, progress: f64, side: f64) -> Option<ShootParams> {
     if crate::bud::is_bud(id) { return crate::bud::bud_params(id, progress, side); }
@@ -340,3 +369,9 @@ fn clip_lines(lines: &[Vec<Point>], area: &[Point]) -> Vec<Vec<Point>> {
     }
     out
 }
+
+/// Backbones grown by `Layout::grow_cached`, by their inputs (the most recent last).
+#[derive(Default)]
+pub struct GrowCache(Vec<(GrowKey, GrowthResult)>);
+#[derive(PartialEq)]
+struct GrowKey { curve: Curve, settings: GrowthSettings, shoots: Vec<ShootEdit>, page: (f64, f64), surface: Option<Vec<Point>> }

@@ -5,7 +5,17 @@
 use super::*;
 use egui::{Align2, FontFamily, FontId, Rounding};
 
-pub const PALETTES: usize = 14;
+pub const PALETTES: usize = 24;
+pub const PALMETTE_SELECTION: usize = 21;
+pub const PALMETTE_ADD: usize = 22;
+pub const PALMETTE_PAGE: usize = 23;
+pub const CARTOUCHE_SELECTION: usize = 17;
+pub const CARTOUCHE_ADD: usize = 18;
+pub const CARTOUCHE_ACANTHUS: usize = 19;
+pub const CARTOUCHE_PAGE: usize = 20;
+pub const ROCOCO_SELECTION: usize = 14;
+pub const ROCOCO_ADD: usize = 15;
+pub const ROCOCO_PAGE: usize = 16;
 pub const CHIP_BOX: usize = 9;
 pub const CHIP_COMPOSE: usize = 10;
 pub const CHIP_FILL: usize = 11;
@@ -20,7 +30,7 @@ pub const LAYERS: usize = 5;
 pub const PAGE: usize = 6;
 pub const CANVAS: usize = 7;
 pub const CARVING: usize = 8;
-pub const DEFAULT_OPEN: [bool; PALETTES] = [true, true, true, false, false, false, false, false, true, false, true, true, false, false];
+pub const DEFAULT_OPEN: [bool; PALETTES] = [true, true, true, false, false, false, false, false, true, false, true, true, false, false, true, true, false, true, true, true, false, true, false, false];
 
 fn semibold(size: f32) -> FontId { FontId::new(size, FontFamily::Name("semibold".into())) }
 
@@ -32,12 +42,12 @@ impl App {
             egui::menu::bar(ui, |ui| {
                 ui.label(egui::RichText::new("ORNATR").font(semibold(18.0)).color(t.text));
                 ui.add_space(14.0);
-                if self.workspace == Workspace::Chip { self.chip_menus(ui); } else { self.scroll_menus(ui); }
+                self.workspace_menus(ui);
                 ui.add_space(14.0);
                 let mut ws = self.workspace;
-                if seg(ui, t, &[(Workspace::Scroll, "Scroll"), (Workspace::Chip, "Chip")], &mut ws, 72.0, 24.0) { self.workspace = ws; self.set_prefs(Prefs { chip: ws == Workspace::Chip, ..self.prefs }); }
-                let (name, dirty) = if self.workspace == Workspace::Chip {
-                    let title = self.chip.title();
+                if seg(ui, t, &[(Workspace::Scroll, "Scroll"), (Workspace::Chip, "Chip"), (Workspace::Rococo, "Rococo"), (Workspace::Cartouche, "Cartouche"), (Workspace::Palmette, "Palmette")], &mut ws, 76.0, 24.0) { self.set_workspace(ws); }
+                let (name, dirty) = if self.workspace != Workspace::Scroll {
+                    let title = match self.workspace { Workspace::Chip => self.chip.title(), Workspace::Cartouche => self.cartouche.title(), Workspace::Palmette => self.palmette.title(), _ => self.rococo.title() };
                     (title.split(" — ").next().unwrap_or("").trim_end_matches(" •").to_string(), title.contains(" •"))
                 } else {
                     (self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into()), self.dirty)
@@ -48,7 +58,7 @@ impl App {
                 let x = r.center().x - g.size().x / 2.0;
                 painter.galley(Pos2::new(x, r.center().y - g.size().y / 2.0), g.clone(), t.text);
                 painter.text(Pos2::new(x + g.size().x + 10.0, r.center().y), Align2::LEFT_CENTER, if dirty { "·  Unsaved" } else { "·  Saved" }, FontId::proportional(13.0), t.dim);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("Runs offline · no AI").small().color(t.dim)); });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("Runs offline · no AI").small().color(t.dim)); crate::platform::about_link(ui, t.dim); });
             });
         });
     }
@@ -392,6 +402,10 @@ pub(crate) fn shelf_caption(ui: &mut egui::Ui, t: &Theme, text: &str) {
 
 /// A shelf tile: icon over its name; the selected one is outlined in the accent.
 pub(crate) fn tile(ui: &mut egui::Ui, t: &Theme, name: &str, icon: fn(&egui::Painter, Rect, Color32), on: bool) -> egui::Response {
+    tile_with(ui, t, name, on, |p, r, c| icon(p, r, c))
+}
+/// A shelf tile whose picture is drawn by `draw` (in a 24-point box).
+pub(crate) fn tile_with(ui: &mut egui::Ui, t: &Theme, name: &str, on: bool, draw: impl FnOnce(&egui::Painter, Rect, Color32)) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(Vec2::new(66.0, 60.0), Sense::click());
     let fill = if on { t.surface } else if resp.hovered() { t.hover } else { t.panel };
     bevel(ui.painter(), r, fill, 6.0);
@@ -399,7 +413,7 @@ pub(crate) fn tile(ui: &mut egui::Ui, t: &Theme, name: &str, icon: fn(&egui::Pai
         ui.painter().rect_stroke(r, 6.0, Stroke::new(1.5, t.accent));
         ui.painter().rect_filled(Rect::from_min_size(Pos2::new(r.left(), r.top() + 12.0), Vec2::new(3.0, r.height() - 24.0)), 1.5, t.accent);
     }
-    icon(ui.painter(), Rect::from_center_size(Pos2::new(r.center().x, r.top() + 23.0), Vec2::splat(24.0)), if on { t.accent } else { t.text });
+    draw(ui.painter(), Rect::from_center_size(Pos2::new(r.center().x, r.top() + 23.0), Vec2::splat(24.0)), if on { t.accent } else { t.text });
     ui.painter().text(Pos2::new(r.center().x, r.bottom() - 12.0), Align2::CENTER_CENTER, name, FontId::proportional(12.5), if on { t.text } else { t.dim });
     if resp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
     resp

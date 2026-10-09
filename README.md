@@ -1,6 +1,8 @@
 # ORNATR
 
-ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, written in Rust. Generate acanthus scrollwork from editable backbones, compose chip-carving patterns, place library leaves and buds, and export designs as SVG at physical millimetre sizes. All generation runs locally.
+ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, written in Rust. Generate acanthus scrollwork from editable backbones, compose chip-carving patterns, rococo, cartouche and palmette designs, place library leaves and buds, and export designs as SVG at physical millimetre sizes. All generation runs locally.
+
+Development blog: [ruffensteint.com/ORNATR/dev](https://ruffensteint.com/ORNATR/dev/).
 
 ## Features
 
@@ -10,7 +12,8 @@ ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, writ
   - **Construction picker:** single scroll, parent and child, S-scroll, mirrored pair, running border, point of origin, corner, and **scroll and vine** (a volute above an acanthus scroll vine), each with seeded variations. *Clad in the vine acanthus* dresses a whole construction in the scroll vine's leaf.
   - **Backbones grown from other backbones:** they join like a leaf root and move with their parent. The fork can be dressed with a collar: an axil leaf lying over the crotch, a split sheath opening along both stems, or **paired leaves**, two baroque acanthus leaves opening from the fork (with slits and eyes when the collar is large).
   - **Leaf dress:** *Eyes in the leaves* lets each notch run on as a narrow slit ending in a round eye, per backbone or per leaf; *Vine acanthus leaves* clads a scroll and its shoots in the scroll vine's broad-bellied leaf instead of the usual one.
-  - **Library:** measured leaf types, terminal buds (husk, trefoil, berry cluster) and saved presets.
+  - **Hand-shaped volutes:** drag a ring handle on a scroll's curled end to roll it tighter or looser and to size it, or set Volute size and Volute roll; *Automatic volute* puts it back.
+  - **Library:** measured leaf types, the drawn crest leaf, terminal buds (husk, trefoil, berry cluster) and saved presets.
   - **Wrapping leaves** laid into a scroll's curl, either generated or taken from the library.
   - **Follow stem**, which bends a placed leaf along the stem it grows from.
   - **Leaf fans:** two or three leaves from one node, sized 100 / 66 / 33.
@@ -24,10 +27,13 @@ ORNATR (formerly ScrollWorks) is a desktop carving design tool for Windows, writ
   - **Box builder:** turn a pattern into the lid or front of a box; the other faces start matched to it and each stays an editable pattern. The back and right side follow the front and left until changed. A lit 3D view shows the assembled box from the front-right or back-left, and all panels export at real size on one sheet.
   - **Lit preview:** shows the cut wood under raking light, to judge how a pattern will read before carving.
   - **Classic engine:** the earlier generator, kept unchanged; existing chip layouts open with it.
+- **Rococo workspace:** moulded rims drawn as editable curves (points with handles, Alt-click to add one) ending in volutes, with fronds (with turnovers), shells, rosettes, frond runs, crests, pockets, cabochons and trellis fields pinned to them. Ornament slides along its rim and moves with it; rims can swell and turn over, and ornament can grow from its rim as one surface. A library of seven starting structures: cartouche, apron agrafe, panel corner, oval medallion, running frieze, wave spray and console bracket.
+- **Cartouche workspace:** a frame (oval, rectangle or shield; moulded, strapwork or beaded) round a centre, with acanthus scrolls grown by the scroll engine, leaf fans, jewels, bosses, shells, straps and openings. Each element can repeat as a mirror, a double mirror or a ring, and editing any copy edits them all. Ten starting cartouches.
+- **Palmette workspace:** palmettes, petals, lotus, stems, volute arms, collars, bosses, fleurettes, husk drops and petal or beaded rings, each with mirror, ring and row repeats, starting from classical, flame, shell and anthemion palmettes and four fleurons.
 - **Page sizes:** presets for carving pieces, box panels and paper, your own saved sizes, millimetres or inches, and a New dialog to choose the size before starting.
 - **Themes:** Walnut (default: warm dark wood, brass accents and a cream page), Graphite, Midnight, Slate, Studio, Paper and Sage.
 
-Layouts save as `.ornatr`, the same format as the earlier browser edition; `.scrollworks` and `.json` layouts still open. Old stamped motifs are converted to grown leaves.
+Every workspace saves `.ornatr` files and Open sends each file to its own workspace. Scroll layouts are the same format as the earlier browser edition; `.scrollworks` and `.json` layouts still open. Old stamped motifs are converted to grown leaves.
 
 ## Build
 

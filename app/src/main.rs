@@ -1,17 +1,23 @@
 //! ORNATR — native desktop app. Procedural acanthus scroll patterns for
 //! carving, drawn with egui (no web engine). Geometry lives in `scroll_core`.
+//! The same program also builds as a web edition (WebAssembly) for the author's website;
+//! everything that differs between the two is in `platform`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cartouche_ui;
 mod chip_ui;
 mod io;
 mod page_sizes;
+mod palmette_ui;
+mod platform;
 mod presets;
+mod rococo_ui;
 mod shelf;
 mod theme;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use scroll_core::geometry::{distance, fit_curve, pt, Bounds, Curve, Point};
-use scroll_core::growth::{Family, GrowthPart, GrowthResult, GrowthSettings, Side};
+use scroll_core::growth::{Family, GrowthPart, GrowthResult, GrowthSettings, Side, VoluteHandle, VOLUTE_SIZE, VOLUTE_TURNS};
 use scroll_core::layers::{carving_guides, layered_drawing, Drawing, Guides};
 use scroll_core::bud::{is_bud, BUD_PRESETS};
 use scroll_core::collar::{is_collar, CollarStyle};
@@ -22,8 +28,10 @@ use scroll_core::profiles::profile;
 use scroll_core::shoots::{drag_tip, nearest_progress, tip_handle, ShootEdit, ShootParams, VINE_CURL};
 use scroll_core::transform::{flip_curve, mirror_shoot, transform_curve, Axis, TransformKind};
 use std::path::PathBuf;
+use platform::OpenFor;
 use theme::{Canvas, Joins, Prefs, Theme, ThemeId};
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]).with_min_inner_size([900.0, 600.0]).with_title("ORNATR")
@@ -34,10 +42,14 @@ fn main() -> eframe::Result<()> {
     eframe::run_native("ORNATR", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
 
+/// The web edition (see platform).
+#[cfg(target_arch = "wasm32")]
+fn main() { platform::start(Box::new(|cc| Ok(Box::new(App::new(cc))))); }
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool { Select, Pen, Transform }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Workspace { Scroll, Chip }
+enum Workspace { Scroll, Chip, Rococo, Cartouche, Palmette }
 #[derive(Clone, Copy, PartialEq)]
 enum Pending { New, Open, Close }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +61,8 @@ enum Pick { Backbone, Leaf, Collar }
 enum Drag {
     Pan,
     Handle { index: usize },
+    /// The selected backbone's volute tip, from the volute as grown when the drag began.
+    Volute { vh: VoluteHandle },
     ShootRoot { edit: String, backbone: usize },
     ShootTip { edit: String, start: ShootParams, root: Point, handle: Point },
     /// A backbone and everything that grows from it move together.
@@ -97,6 +111,9 @@ struct App {
     fillet_draft: f32,
     workspace: Workspace,
     chip: chip_ui::ChipState,
+    rococo: rococo_ui::RococoState,
+    cartouche: cartouche_ui::CartoucheState,
+    palmette: palmette_ui::PalmetteState,
     scroll_presets: presets::Library,
     scroll_thumbs: Vec<Option<Vec<Vec<Point>>>>,
     /// Last construction built, its variation, and cached card thumbnails.
@@ -113,14 +130,18 @@ struct App {
     palettes: [bool; shelf::PALETTES],
 }
 
+/// The scroll workspace opens on the ORNATR mark grown in the app (the logo
+/// study's pick, 2026-10-09); File → New still starts from the plain starter.
+fn startup_layout() -> Layout { io::parse(io::STARTUP).unwrap_or_else(|_| Layout::starter()) }
+
 impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         let prefs = Prefs::load();
-        let layout = Layout::starter();
+        let layout = startup_layout();
         let mut app = App { layout, path: None, dirty: false, past: vec![], future: vec![], tool: Tool::Select, tab: Tab::Properties, backbone: 0, selected: None, carving: false, show_guides: true, grid: false,
             grown: GrowthResult::default(), drawing: Drawing { outline: vec![], folds: vec![] }, smooth_due: false, guides: None, stale: true, zoom: 3.0, origin: Pos2::ZERO, fitted: false, drag: None, drag_before: None, message: String::new(), cursor_mm: None, shown_title: String::new(), pending: None, allow_close: false, prefs, applied: None, scale_draft: prefs.ui_scale, fillet_draft: prefs.fillet,
-            workspace: if prefs.chip { Workspace::Chip } else { Workspace::Scroll }, chip: chip_ui::ChipState::new(), scroll_presets: presets::Library::load("scroll-presets.json"), scroll_thumbs: vec![], skeleton: None, skel_seed: 0, skel_thumbs: vec![None; Skeleton::ALL.len()], skel_vine_leaf: false, page_sizes: page_sizes::PageSizes::load(), new_dialog: None, new_size: None, palettes: shelf::DEFAULT_OPEN };
+            workspace: if prefs.chip { Workspace::Chip } else if prefs.rococo { Workspace::Rococo } else if prefs.cartouche { Workspace::Cartouche } else if prefs.palmette { Workspace::Palmette } else { Workspace::Scroll }, chip: chip_ui::ChipState::new(), rococo: rococo_ui::RococoState::new(), cartouche: cartouche_ui::CartoucheState::new(), palmette: palmette_ui::PalmetteState::new(), scroll_presets: presets::Library::load("scroll-presets.json"), scroll_thumbs: vec![], skeleton: None, skel_seed: 0, skel_thumbs: vec![None; Skeleton::ALL.len()], skel_vine_leaf: false, page_sizes: page_sizes::PageSizes::load(), new_dialog: None, new_size: None, palettes: shelf::DEFAULT_OPEN };
         app.regrow();
         app
     }
@@ -245,9 +266,42 @@ impl App {
         format!("{}{} — ORNATR", name, if self.dirty { " •" } else { "" })
     }
     fn new_file(&mut self) { let l = match self.new_size.take() { Some((w, h)) => resized(&Layout::starter(), w, h), None => Layout::starter() }; self.commit(l); self.path = None; self.dirty = false; self.backbone = 0; self.selected = None; self.fitted = false; }
-    fn open(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("ORNATR layout", &["ornatr", "scrollworks", "json"]).pick_file() else { return };
-        match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| io::parse(&t)) {
+    fn open(&mut self, ctx: &egui::Context) {
+        if let Some(r) = platform::pick_text(ctx, OpenFor::Scroll, "ORNATR layout", &["ornatr", "scrollworks", "json"]) { self.opened(OpenFor::Scroll, r); }
+    }
+    /// A picked file, once read. Every workspace saves .ornatr files, so the file goes
+    /// to the workspace its contents belong to (`io::file_kind`), whichever Open picked
+    /// it, and that workspace comes to the front. A scroll layout picked from another
+    /// workspace waits while the scroll pattern has unsaved changes.
+    fn opened(&mut self, who: OpenFor, picked: platform::Opened) {
+        let to = match &picked { Ok((_, text)) => io::file_kind(text).unwrap_or(who), Err(_) => who };
+        if to == OpenFor::Scroll && who != OpenFor::Scroll && self.dirty {
+            let m = "That is a scroll layout, and the scroll pattern has unsaved changes. Save it in the Scroll workspace, then open this file there.".to_string();
+            match who { OpenFor::Chip => self.chip.message = m, OpenFor::Cartouche => self.cartouche.message = m, OpenFor::Palmette => self.palmette.message = m, _ => self.rococo.message = m }
+            return;
+        }
+        match to {
+            OpenFor::Scroll => self.open_text(picked),
+            OpenFor::Chip => self.chip.open_text(picked),
+            OpenFor::Rococo => self.rococo.open_text(picked),
+            OpenFor::Cartouche => self.cartouche.open_text(picked),
+            OpenFor::Palmette => self.palmette.open_text(picked),
+        }
+        self.set_workspace(match to { OpenFor::Scroll => Workspace::Scroll, OpenFor::Chip => Workspace::Chip, OpenFor::Rococo => Workspace::Rococo, OpenFor::Cartouche => Workspace::Cartouche, OpenFor::Palmette => Workspace::Palmette });
+    }
+    fn open_chip(&mut self, ctx: &egui::Context) {
+        if let Some(r) = platform::pick_text(ctx, OpenFor::Chip, "ORNATR chip layout or box", &["ornatr", "json"]) { self.opened(OpenFor::Chip, r); }
+    }
+    fn open_rococo(&mut self, ctx: &egui::Context) {
+        if let Some(r) = platform::pick_text(ctx, OpenFor::Rococo, "ORNATR rococo design", &["ornatr", "json"]) { self.opened(OpenFor::Rococo, r); }
+    }
+    fn open_cartouche(&mut self, ctx: &egui::Context) {
+        if let Some(r) = platform::pick_text(ctx, OpenFor::Cartouche, "ORNATR cartouche", &["ornatr", "json"]) { self.opened(OpenFor::Cartouche, r); }
+    }
+    /// A picked file, once read (at once on the desktop, a moment later on the web).
+    fn open_text(&mut self, picked: platform::Opened) {
+        let (path, text) = match picked { Ok(p) => p, Err(e) => { self.message = e; return } };
+        match io::parse(&text) {
             Ok(mut l) => {
                 let legacy = l.items.len();
                 if legacy > 0 { convert_legacy(&mut l, &mut new_id); }
@@ -259,9 +313,9 @@ impl App {
     }
     /// File → New: choose the page size first, starting from the current one.
     fn open_new_dialog(&mut self) {
-        let chip = self.workspace == Workspace::Chip;
-        let (width, height) = if chip { (self.chip.settings.width(), self.chip.settings.page_height()) } else { (self.layout.width, self.layout.height) };
-        self.new_dialog = Some(page_sizes::NewDialog { chip, width, height });
+        let (chip, rococo, cartouche, palmette) = (self.workspace == Workspace::Chip, self.workspace == Workspace::Rococo, self.workspace == Workspace::Cartouche, self.workspace == Workspace::Palmette);
+        let (width, height) = if chip { (self.chip.settings.width(), self.chip.settings.page_height()) } else if rococo { (self.rococo.design.width, self.rococo.design.height) } else if cartouche { (self.cartouche.design.width, self.cartouche.design.height) } else if palmette { (self.palmette.design.width, self.palmette.design.height) } else { (self.layout.width, self.layout.height) };
+        self.new_dialog = Some(page_sizes::NewDialog { chip, rococo, cartouche, palmette, width, height });
     }
     fn show_new_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.new_dialog.take() else { return };
@@ -272,7 +326,7 @@ impl App {
             None => self.new_dialog = Some(d),
             Some(page_sizes::NewChoice::Cancel) => {}
             Some(page_sizes::NewChoice::Create(w, h)) => {
-                if d.chip { self.chip.new_pattern_sized(w, h); } else { self.new_size = Some((w, h)); self.ask(Pending::New); }
+                if d.chip { self.chip.new_pattern_sized(w, h); } else if d.rococo { self.rococo.new_design(w, h); } else if d.cartouche { self.cartouche.new_design(w, h); } else if d.palmette { self.palmette.new_design(w, h); } else { self.new_size = Some((w, h)); self.ask(Pending::New); }
             }
         }
     }
@@ -285,7 +339,7 @@ impl App {
         let Some((p, cleared)) = self.pending else { return };
         if cleared {
             self.pending = None;
-            match p { Pending::New => self.new_file(), Pending::Open => self.open(), Pending::Close => { self.allow_close = true; ctx.send_viewport_cmd(egui::ViewportCommand::Close); } }
+            match p { Pending::New => self.new_file(), Pending::Open => self.open(ctx), Pending::Close => { self.allow_close = true; ctx.send_viewport_cmd(egui::ViewportCommand::Close); } }
             return;
         }
         let mut choice = None;
@@ -307,14 +361,14 @@ impl App {
     }
     fn save(&mut self, choose: bool) {
         let path = if choose || self.path.is_none() {
-            match rfd::FileDialog::new().add_filter("ORNATR layout", &["ornatr"]).set_file_name("pattern.ornatr").save_file() { Some(p) => p, None => return }
+            match platform::choose_save("ORNATR layout", &["ornatr"], "pattern.ornatr") { Some(p) => p, None => return }
         } else { self.path.clone().unwrap() };
-        match std::fs::write(&path, io::save(&self.layout)) { Ok(()) => { self.path = Some(path); self.dirty = false; self.message = "Saved.".into(); } Err(e) => self.message = format!("Could not save: {e}") }
+        match platform::write_file(&path, &io::save(&self.layout)) { Ok(()) => { self.path = Some(path); self.dirty = false; self.message = "Saved.".into(); } Err(e) => self.message = format!("Could not save: {e}") }
     }
     fn export(&mut self, carving: bool) {
         let (name, svg) = if carving { ("carving-guides.svg", self.layout.carving_svg()) } else { ("pattern.svg", self.layout.svg_joins(self.prefs.join_style())) };
-        if let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).set_file_name(name).save_file() {
-            match std::fs::write(&p, svg) { Ok(()) => self.message = format!("Exported {}.", p.display()), Err(e) => self.message = format!("Could not export: {e}") }
+        if let Some(p) = platform::choose_save("SVG", &["svg"], name) {
+            match platform::write_file(&p, &svg) { Ok(()) => self.message = format!("Exported {}.", platform::shown(&p)), Err(e) => self.message = format!("Could not export: {e}") }
         }
     }
 
@@ -339,7 +393,7 @@ fn resized(layout: &Layout, w: f64, h: f64) -> Layout {
 
 fn new_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use web_time::{SystemTime, UNIX_EPOCH};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
     let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
@@ -359,11 +413,39 @@ impl eframe::App for App {
         self.run_pending(ctx);
         self.show_new_dialog(ctx);
         if self.stale { self.regrow(); }
-        let title = if self.workspace == Workspace::Chip { self.chip.title() } else { self.title() };
-        if title != self.shown_title { ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone())); self.shown_title = title; }
+        let title = match self.workspace { Workspace::Chip => self.chip.title(), Workspace::Rococo => self.rococo.title(), Workspace::Cartouche => self.cartouche.title(), Workspace::Palmette => self.palmette.title(), Workspace::Scroll => self.title() };
+        if title != self.shown_title { platform::set_title(ctx, &title); self.shown_title = title; }
+        platform::set_unsaved(self.dirty);
+        while let Some((who, picked)) = platform::take_opened() {
+            self.opened(who, picked)
+        }
         let desk = egui::Frame::none().fill(self.canvas_colors().desk);
         if self.prefs.shelf {
             self.shelf_top_bar(ctx);
+            if self.workspace == Workspace::Rococo {
+                self.rococo_shelf_context(ctx);
+                self.rococo_shelf_status(ctx);
+                self.rococo_shelf_tools(ctx);
+                self.rococo_shelf_tray(ctx);
+                egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.rococo_canvas(ui));
+                return;
+            }
+            if self.workspace == Workspace::Palmette {
+                self.palmette_shelf_context(ctx);
+                self.palmette_shelf_status(ctx);
+                self.palmette_shelf_tools(ctx);
+                self.palmette_shelf_tray(ctx);
+                egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.palmette_canvas(ui));
+                return;
+            }
+            if self.workspace == Workspace::Cartouche {
+                self.cartouche_shelf_context(ctx);
+                self.cartouche_shelf_status(ctx);
+                self.cartouche_shelf_tools(ctx);
+                self.cartouche_shelf_tray(ctx);
+                egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.cartouche_canvas(ui));
+                return;
+            }
             if self.workspace == Workspace::Chip {
                 self.chip_shelf_context(ctx);
                 self.chip_shelf_status(ctx);
@@ -380,6 +462,24 @@ impl eframe::App for App {
             return;
         }
         self.menu_bar(ctx);
+        if self.workspace == Workspace::Rococo {
+            self.rococo_status(ctx);
+            self.rococo_side_panel(ctx);
+            egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.rococo_canvas(ui));
+            return;
+        }
+        if self.workspace == Workspace::Palmette {
+            self.palmette_status(ctx);
+            self.palmette_side_panel(ctx);
+            egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.palmette_canvas(ui));
+            return;
+        }
+        if self.workspace == Workspace::Cartouche {
+            self.cartouche_status(ctx);
+            self.cartouche_side_panel(ctx);
+            egui::CentralPanel::default().frame(desk).show(ctx, |ui| self.cartouche_canvas(ui));
+            return;
+        }
         if self.workspace == Workspace::Chip {
             self.chip_status(ctx);
             self.chip_side_panel(ctx);
@@ -400,11 +500,14 @@ impl App {
         let (undo, redo, redo2, save, save_as, open, new) = ctx.input_mut(|i| (
             i.consume_key(Modifiers::COMMAND, Key::Z), i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z), i.consume_key(Modifiers::COMMAND, Key::Y),
             i.consume_key(Modifiers::COMMAND, Key::S), i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::S), i.consume_key(Modifiers::COMMAND, Key::O), i.consume_key(Modifiers::COMMAND, Key::N)));
+        if self.workspace == Workspace::Rococo { self.rococo_shortcuts(ctx, undo, redo || redo2, save, save_as, open, new, typing); return; }
+        if self.workspace == Workspace::Palmette { self.palmette_shortcuts(ctx, undo, redo || redo2, save, save_as, open, new, typing); return; }
+        if self.workspace == Workspace::Cartouche { self.cartouche_shortcuts(ctx, undo, redo || redo2, save, save_as, open, new, typing); return; }
         if self.workspace == Workspace::Chip {
             if undo { self.chip.undo(); }
             if redo || redo2 { self.chip.redo(); }
             if save_as { self.chip.save(true); } else if save { self.chip.save(false); }
-            if open { self.chip.open(); }
+            if open { self.open_chip(ctx); }
             if new { self.open_new_dialog(); }
             if typing { return; }
             let (del, esc) = ctx.input(|i| (i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace), i.key_pressed(Key::Escape)));
@@ -446,14 +549,25 @@ impl App {
             egui::menu::bar(ui, |ui| {
                 ui.label(egui::RichText::new("ORNATR").family(egui::FontFamily::Name("semibold".into())).size(15.0).color(t.text));
                 ui.add_space(10.0);
-                if self.workspace == Workspace::Chip { self.chip_menus(ui); } else { self.scroll_menus(ui); }
+                self.workspace_menus(ui);
                 ui.add_space(16.0);
                 let mut ws = self.workspace;
-                ui.allocate_ui(Vec2::new(170.0, 28.0), |ui| segmented(ui, t, &[(Workspace::Scroll, "Scroll"), (Workspace::Chip, "Chip")], &mut ws));
-                if ws != self.workspace { self.workspace = ws; self.set_prefs(Prefs { chip: ws == Workspace::Chip, ..self.prefs }); }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("Runs offline · no AI").small().color(t.dim)); });
+                ui.allocate_ui(Vec2::new(420.0, 28.0), |ui| segmented(ui, t, &[(Workspace::Scroll, "Scroll"), (Workspace::Chip, "Chip"), (Workspace::Rococo, "Rococo"), (Workspace::Cartouche, "Cartouche"), (Workspace::Palmette, "Palmette")], &mut ws));
+                self.set_workspace(ws);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("Runs offline · no AI").small().color(t.dim)); crate::platform::about_link(ui, t.dim); });
             });
         });
+    }
+
+    /// The active workspace's File, Edit and View menus.
+    fn workspace_menus(&mut self, ui: &mut egui::Ui) {
+        match self.workspace { Workspace::Chip => self.chip_menus(ui), Workspace::Rococo => self.rococo_menus(ui), Workspace::Cartouche => self.cartouche_menus(ui), Workspace::Palmette => self.palmette_menus(ui), Workspace::Scroll => self.scroll_menus(ui) }
+    }
+    /// Switch workspace, remembering it for next time.
+    fn set_workspace(&mut self, ws: Workspace) {
+        if ws == self.workspace { return; }
+        self.workspace = ws;
+        self.set_prefs(Prefs { chip: ws == Workspace::Chip, rococo: ws == Workspace::Rococo, cartouche: ws == Workspace::Cartouche, palmette: ws == Workspace::Palmette, ..self.prefs });
     }
 
     /// The scroll workspace's File, Edit and View menus (both layouts).
@@ -670,6 +784,12 @@ impl App {
         egui::ComboBox::from_label("Curl side").selected_text(match g.side { Side::Alternate => "Alternate", Side::Left => "Left", Side::Right => "Right" }).show_ui(ui, |ui| {
             ui.selectable_value(&mut g.side, Side::Alternate, "Alternate"); ui.selectable_value(&mut g.side, Side::Left, "Left"); ui.selectable_value(&mut g.side, Side::Right, "Right");
         });
+        if fam == Family::Spiral && g.composition != Some(2) {
+            let was = (g.volute_size.is_some() || g.volute_turns.is_some()).then(|| (g.volute_size.unwrap_or(1.0), g.volute_turns.unwrap_or(1.0)));
+            let mut v = was;
+            volute_controls(ui, &mut v);
+            if v != was { g.volute_size = v.map(|v| v.0); g.volute_turns = v.map(|v| v.1); }
+        }
         if g != before { self.set_settings(g); }
     }
 
@@ -971,7 +1091,8 @@ impl App {
     fn canvas(&mut self, ui: &mut egui::Ui) {
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = resp.rect;
-        if !self.fitted { self.fit(rect); }
+        // (a browser canvas can be zero-sized for its first frames: fit once it has a size)
+        if !self.fitted && rect.width() > 120.0 && rect.height() > 120.0 { self.fit(rect); }
         // zoom about the cursor, pan with middle/right drag or space+drag
         if let Some(hover) = resp.hover_pos() {
             let (scroll, zoom_delta) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
@@ -1029,6 +1150,12 @@ impl App {
             painter.extend(Shape::dashed_line(&[self.to_screen(c[0]), self.to_screen(c[1])], arm, 3.0, 3.0));
             painter.extend(Shape::dashed_line(&[self.to_screen(c[2]), self.to_screen(c[3])], arm, 3.0, 3.0));
             for (i, p) in c.iter().enumerate() { painter.circle(self.to_screen(*p), 5.5, if i == 0 || i == 3 { ring } else { sheet }, Stroke::new(1.5, ring)); }
+            // the volute's tip, ringed like the eye it sits in
+            if let Some(v) = self.layout.volute_handle(self.backbone) {
+                let tip = self.to_screen(v.tip);
+                painter.extend(Shape::dashed_line(&[self.to_screen(c[3]), tip], arm, 2.0, 4.0));
+                painter.circle(tip, 6.0, sheet, Stroke::new(2.0, ring)); painter.circle_filled(tip, 2.2, ring);
+            }
         }
         // selected leaf handles
         let mut handles: Option<(Pos2, Pos2)> = None;
@@ -1104,6 +1231,10 @@ impl App {
                 Some(Drag::Handle { index }) => { let i = *index; let b = self.backbone;
                     // An attached scroll's start slides along its parent's stem, keeping its shape.
                     if !(i == 0 && self.layout.slide_attached(b, mm)) { self.layout.curves[b][i] = pt(mm.x.clamp(0.0, self.layout.width), mm.y.clamp(0.0, self.layout.height)); }
+                    self.layout.locked_parts.clear(); self.stale = true; }
+                Some(Drag::Volute { vh }) => { let (size, turns, side) = vh.drag_to(mm); let b = self.backbone;
+                    while self.layout.growth.len() < self.layout.curves.len() { let g = self.layout.growth_for(self.layout.growth.len()); self.layout.growth.push(g); }
+                    let g = &mut self.layout.growth[b]; g.volute_size = Some(size); g.volute_turns = Some(turns); g.side = side;
                     self.layout.locked_parts.clear(); self.stale = true; }
                 Some(Drag::ShootRoot { edit, backbone }) => { let (id, b) = (edit.clone(), *backbone); let pr = self.vine_progress(b, &id, mm).unwrap_or_else(|| nearest_progress(&self.layout.curves[b], mm)); if let Some(e) = self.layout.shoots.iter_mut().find(|e| e.id == id && e.backbone == b) { e.params.progress = pr; } self.stale = true; }
                 Some(Drag::ShootTip { edit, start, root, handle }) => { let (reach, turn) = drag_tip(start, *root, *handle, mm); let id = edit.clone(); if let Some(e) = self.layout.shoots.iter_mut().find(|e| e.id == id) { e.params.reach = reach; e.params.turn = turn; } self.stale = true; }
@@ -1182,6 +1313,7 @@ impl App {
             }
         }
         if self.show_guides {
+            if let Some(vh) = self.layout.volute_handle(self.backbone).filter(|v| self.to_screen(v.tip).distance(pos) < 10.0) { return Some(Drag::Volute { vh }); }
             for (i, p) in self.layout.curves[self.backbone].iter().enumerate() { if self.to_screen(*p).distance(pos) < 10.0 { return Some(Drag::Handle { index: i }); } }
             for (bi, c) in self.layout.curves.iter().enumerate() { if bi != self.backbone { for p in c { if self.to_screen(*p).distance(pos) < 10.0 { self.backbone = bi; } } } }
         }
@@ -1205,6 +1337,18 @@ impl App {
         let mut x = 0.0; while x <= self.layout.width { let a = self.to_screen(pt(x, 0.0)); painter.line_segment([Pos2::new(a.x, paper.top()), Pos2::new(a.x, paper.bottom())], Stroke::new(if (x as i64) % 10 == 0 { 0.8 } else { 0.4 }, grid)); x += step; }
         let mut y = 0.0; while y <= self.layout.height { let a = self.to_screen(pt(0.0, y)); painter.line_segment([Pos2::new(paper.left(), a.y), Pos2::new(paper.right(), a.y)], Stroke::new(if (y as i64) % 10 == 0 { 0.8 } else { 0.4 }, grid)); y += step; }
     }
+}
+
+/// A scroll's volute shaped by hand: its size and how far it rolls in,
+/// against the automatic one, and back to automatic.
+fn volute_controls(ui: &mut egui::Ui, volute: &mut Option<(f64, f64)>) {
+    let (mut size, mut turns) = volute.unwrap_or((1.0, 1.0));
+    let a = ui.add(egui::Slider::new(&mut size, VOLUTE_SIZE.0..=VOLUTE_SIZE.1).text("Volute size").custom_formatter(|n, _| format!("{n:.2}×")))
+        .on_hover_text("The curl at the scroll's end against its automatic size. On the canvas, drag the ringed dot at its tip");
+    let b = ui.add(egui::Slider::new(&mut turns, VOLUTE_TURNS.0..=VOLUTE_TURNS.1).text("Volute roll").custom_formatter(|n, _| format!("{n:.2}×")))
+        .on_hover_text("How far the curl rolls in against the automatic one (about 1.2 turns): less opens it into a hook, more winds it tighter");
+    if a.changed() || b.changed() { *volute = Some((size, turns)); }
+    if volute.is_some() && ui.button("Automatic volute").on_hover_text("Let the volute size itself from the stem again").clicked() { *volute = None; }
 }
 
 /// Segmented control: a row of equal-width options in a rounded track.

@@ -194,6 +194,12 @@ pub fn install_fonts(ctx: &egui::Context) {
 #[derive(Clone, Copy, PartialEq)]
 pub struct Prefs { pub theme: ThemeId, pub white_page: bool, pub ui_scale: f32, /// Last workspace was Chip.
     pub chip: bool,
+    /// Last workspace was Rococo.
+    pub rococo: bool,
+    /// Last workspace was Cartouche.
+    pub cartouche: bool,
+    /// Last workspace was Palmette.
+    pub palmette: bool,
     /// How roots are drawn: "classic", "smooth" or "exact".
     pub joins: Joins,
     /// Fillet radius in mm for exact joins.
@@ -213,7 +219,7 @@ impl Joins {
     pub fn from_key(k: &str) -> Option<Joins> { match k { "classic" => Some(Joins::Classic), "smooth" => Some(Joins::Smooth), "exact" => Some(Joins::Exact), _ => None } }
 }
 
-impl Default for Prefs { fn default() -> Self { Prefs { theme: ThemeId::Walnut, white_page: false, ui_scale: 1.0, chip: false, joins: Joins::Exact, fillet: 0.8, chip_lit: false, inches: false, shelf: true } } }
+impl Default for Prefs { fn default() -> Self { Prefs { theme: ThemeId::Walnut, white_page: false, ui_scale: 1.0, chip: false, rococo: false, cartouche: false, palmette: false, joins: Joins::Exact, fillet: 0.8, chip_lit: false, inches: false, shelf: true } } }
 
 impl Prefs {
     /// The core join style these preferences ask for.
@@ -223,12 +229,12 @@ impl Prefs {
     }
 }
 
-fn prefs_path() -> Option<PathBuf> { crate::presets::app_dir().map(|d| d.join("settings.txt")) }
+const PREFS: &str = "settings.txt";
 
 impl Prefs {
     pub fn load() -> Prefs {
         let mut p = Prefs::default();
-        let Some(text) = prefs_path().and_then(|f| std::fs::read_to_string(f).ok()) else { return p };
+        let Some(text) = crate::platform::store_read(PREFS) else { return p };
         // Settings saved before the shelf layout existed open once in it, in
         // Walnut; View → ZBrush-style layout and the Theme list switch back.
         let mut saw_layout = false;
@@ -237,7 +243,7 @@ impl Prefs {
             match k.trim() {
                 "theme" => if let Some(t) = ThemeId::from_key(v.trim()) { p.theme = t; },
                 "white_page" => p.white_page = v.trim() == "true",
-                "workspace" => p.chip = v.trim() == "chip",
+                "workspace" => { p.chip = v.trim() == "chip"; p.rococo = v.trim() == "rococo"; p.cartouche = v.trim() == "cartouche"; p.palmette = v.trim() == "palmette"; }
                 "joins" => if let Some(j) = Joins::from_key(v.trim()) { p.joins = j; },
                 "fillet" => if let Ok(r) = v.trim().parse::<f32>() { p.fillet = r.clamp(0.3, 1.5); },
                 "chip_lit" => p.chip_lit = v.trim() == "true",
@@ -251,8 +257,6 @@ impl Prefs {
         p
     }
     pub fn save(&self) {
-        let Some(f) = prefs_path() else { return };
-        if let Some(dir) = f.parent() { let _ = std::fs::create_dir_all(dir); }
-        let _ = std::fs::write(f, format!("theme={}\nwhite_page={}\nui_scale={:.2}\nworkspace={}\njoins={}\nfillet={:.2}\nchip_lit={}\nunits={}\nlayout={}\n", self.theme.key(), self.white_page, self.ui_scale, if self.chip { "chip" } else { "scroll" }, self.joins.key(), self.fillet, self.chip_lit, if self.inches { "in" } else { "mm" }, if self.shelf { "shelf" } else { "classic" }));
+        let _ = crate::platform::store_write(PREFS, &format!("theme={}\nwhite_page={}\nui_scale={:.2}\nworkspace={}\njoins={}\nfillet={:.2}\nchip_lit={}\nunits={}\nlayout={}\n", self.theme.key(), self.white_page, self.ui_scale, if self.chip { "chip" } else if self.rococo { "rococo" } else if self.cartouche { "cartouche" } else if self.palmette { "palmette" } else { "scroll" }, self.joins.key(), self.fillet, self.chip_lit, if self.inches { "in" } else { "mm" }, if self.shelf { "shelf" } else { "classic" }));
     }
 }

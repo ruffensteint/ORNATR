@@ -2335,6 +2335,7 @@ dependencies = [
  "scroll_core",
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
